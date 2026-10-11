@@ -325,6 +325,24 @@ class CpmTests(unittest.TestCase):
         self.assertEqual(cpm.keymode, "ws")
         self.assertEqual(cpm.console.keymap, "ws")
 
+    def test_play_frames_and_cp437(self):
+        os.makedirs(os.path.join(self.tmp, "0"), exist_ok=True)
+        data = b"head\x1b[HAAA\x1b[HBBB\x1b[HCCC\x1a" + b"SAUCE00"
+        with open(os.path.join(self.tmp, "0", "T.ANS"), "wb") as f:
+            f.write(data)
+        cpm, out = make_cpm(self.tmp)
+        cpm._ccp_command("PLAY T.ANS 500")
+        s = out.getvalue()
+        self.assertIn("\x1b[HAAA", s)
+        self.assertIn("\x1b[HCCC", s)
+        self.assertNotIn("SAUCE", s)
+        self.assertIn("\x1b[?25h", s)
+        out.truncate(0); out.seek(0)
+        out2 = io.StringIO()
+        con = Console(io.StringIO(""), out2, charset="cp437")
+        con.write_bytes(b"\xdb\xb0")
+        self.assertEqual(out2.getvalue(), "\u2588\u2591")
+
     def test_copy_command(self):
         for d in ("A", "B"):
             os.makedirs(os.path.join(self.tmp, d, "0"))

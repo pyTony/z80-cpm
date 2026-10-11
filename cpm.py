@@ -112,11 +112,12 @@ class Console:
         self.stdin = sys.stdin if stdin is None else stdin
         self.stdout = sys.stdout if stdout is None else stdout
         self.charset = charset
+        self._cp437 = bytes(range(128, 256)).decode("cp437") if charset == "cp437" else None
         self._buf = []
         self.history = []
         self.keymap = "ws"             # cursor keys: WordStar codes, or "bbc" (BBC BASIC)
         self._eof_reads = 0
-        self.mask = 0x7F               # 7-bit output; 0xFF after RunCPM's CONSOLE8
+        self.mask = 0xFF if charset == "cp437" else 0x7F   # 7-bit output; 0xFF after CONSOLE8
         self._last_poll = 0.0
         self.idle = 0.0                # seconds spent waiting for input
         self._eof = False
@@ -218,6 +219,8 @@ class Console:
                 self._esc = 1
             elif self.charset == "fi":
                 ch = _FI_OUT.get(b, ch)
+            elif self._cp437 and b >= 0x80:
+                ch = self._cp437[b - 128]
         elif self._esc == 1:                       # after ESC
             self._esc = 2 if b == 0x5B else 0
         elif 0x40 <= b <= 0x7E:                    # final byte of ESC [ ... seq
@@ -225,6 +228,19 @@ class Console:
         self.stdout.write(ch)
         if self._esc == 0:          # flush at once, except inside an ESC sequence
             self.flush()
+
+    def write_bytes(self, data):
+        """Write many output bytes at once (same translation as write(); one flush)."""
+        data = bytes(b & self.mask for b in data) if self.mask != 0xFF else data
+        if self._cp437:
+            text = "".join(self._cp437[b - 128] if b >= 0x80 else chr(b) for b in data)
+        elif self.charset == "fi":
+            text = "".join(_FI_OUT.get(b, chr(b)) for b in data)
+        else:
+            text = data.decode("latin-1")
+        self._esc = 0
+        self.stdout.write(text)
+        self.flush()
 
     def flush(self):
         try:
@@ -1259,6 +1275,79 @@ class CPM:
             self.console.keymap = keymap
             self._set_drive(drive)
 
+    _FRAME_RE = re.compile(rb"\x1b\[(?:1;1)?H|\x0c")
+
+    def _ccp_play(self, args):
+        """PLAY file [fps|baud]: send a terminal/ANSI stream to the screen.  A number up to
+        240 is frames per second (a frame starts at ESC[H, ESC[1;1H or a form feed);
+        a larger number is a baud rate (10 bits per byte).  Default: 30 fps when the file
+        has frames, else 9600 baud.  Stops at ^Z (a SAUCE record may follow), or on q/Esc."""
+        import time
+        self._make_fcb(0x5C, args[0])
+        path = self._fcb_path(0x5C)
+        if path is None:
+            self._print("\n" + self._c("red", "NO FILE"))
+            return
+        rate = None
+        if len(args) > 1:
+            try:
+                rate = float(args[1].lower().rstrip("bfps"))
+            except ValueError:
+                self._print("\n" + self._c("red", "BAD RATE %s" % args[1]))
+                return
+            if rate <= 0:
+                self._print("\n" + self._c("red", "BAD RATE %s" % args[1]))
+                return
+        con = self.console
+        with open(path, "rb") as f:
+            head = f.read(1 << 20)
+            f.seek(0)
+            if rate is None:
+                rate = 30.0 if len(self._FRAME_RE.findall(head)) >= 2 else 9600.0
+            frames = rate <= 240
+            t0 = time.perf_counter()
+            sent = 0                                    # frames (or bytes) sent
+            buf = b""
+            done = False
+            con.write_bytes(b"\x1b[2J\x1b[H\x1b[?25l")
+            try:
+                while not done:
+                    data = f.read(1 << 20)
+                    if not data:
+                        done = True
+                    buf += data
+                    z = buf.find(b"\x1a")
+                    if z >= 0:
+                        buf, done = buf[:z], True
+                    if frames:
+                        cuts = [m.start() for m in self._FRAME_RE.finditer(buf)]
+                        segs = [buf[a:b] for a, b in zip([0] + cuts, cuts + [len(buf)]) if b > a]
+                        if not done and segs:
+                            buf = segs.pop()            # the last one may be incomplete
+                        else:
+                            buf = b""
+                    else:
+                        step = max(1, int(rate / 10 * 0.02))
+                        segs = [buf[i:i + step] for i in range(0, len(buf), step)]
+                        if not done and segs and len(segs[-1]) < step:
+                            buf = segs.pop()
+                        else:
+                            buf = b""
+                    for seg in segs:
+                        con.write_bytes(seg)
+                        sent += 1 if frames else len(seg)
+                        due = t0 + (sent / rate if frames else sent * 10 / rate)
+                        wait = due - time.perf_counter()
+                        if wait > 0.002:
+                            time.sleep(wait)
+                        if con.has_input():
+                            k = con.read_char()
+                            if k in (0x71, 0x51, 0x1B, 0x03, None):
+                                done = True
+                                break
+            finally:
+                con.write_bytes(b"\x1b[0m\x1b[?25h\r\n")
+
     _SPEC_RE = re.compile(r"^(?:([A-Za-z])(\d{1,2})?:)?(.*)$")
 
     def _spec_dir(self, letter, user):
@@ -1471,6 +1560,10 @@ class CPM:
         "TYPE": ("TYPE file", "Show a text file on the screen.   TYPE READ.ME"),
         "TIME": ("TIME [ON|OFF]", "Show timing after every program run: real time here, instructions,\n"
                  "T-states and the time a 4 MHz Z80 would need. Also --time on the command line."),
+        "PLAY": ("PLAY file [fps|baud]", "Show an ANSI/terminal stream (BBS art, ANSI animations such as Bad Apple).\n"
+                 "A number up to 240 is frames per second (frames start at ESC[H); a larger one\n"
+                 "is a modem speed such as 9600.  Default: 30 fps for animations, else 9600 baud.\n"
+                 "q or Esc stops.  Start with --charset cp437 for the IBM block characters."),
         "KEYMAP": ("KEYMAP [AUTO|WS|BBC]", "Codes sent by the cursor keys, Home/End, Delete and Insert.  WS: WordStar\n"
                    "(^E ^X ^S ^D ...) for TE, WordStar, ...  BBC: the keys BBC BASIC expects\n"
                    "(^G ^O ^J ^L, ^F ^N, ^R, ^Q).  AUTO (default) uses BBC for programs\n"
@@ -1522,7 +1615,7 @@ class CPM:
             "\n  PATH [list]     command search path   ALIAS n=text   short names"
             "\n  TIME [ON|OFF]   show run timing       cmd ; cmd      several commands"
             "\n  COPY src [dst]  copy files (HELP COPY)  VIEW file    page through a file of any size"
-            "\n  KEYMAP [mode]   cursor key codes (HELP KEYMAP)"
+            "\n  KEYMAP [mode]   cursor key codes      PLAY file [fps] show an ANSI stream/animation"
             "\n  HELP [command]  this help (or ?)      EXIT           leave (BYE, QUIT)"
             "\n"
             "\nAnything else runs NAME.COM:  MBASIC   DUMP FILE.TXT   B:PROG"
@@ -1646,6 +1739,8 @@ class CPM:
             else:
                 self.timing = not self.timing
             self._print("\nTiming %s" % ("ON" if self.timing else "OFF"))
+        elif cmd == "PLAY" and args:
+            self._ccp_play(args)
         elif cmd == "KEYMAP":
             if args and args[0].lower() in ("auto", "ws", "bbc"):
                 self.keymode = args[0].lower()
@@ -1748,7 +1843,7 @@ def main(argv=None):
                          "(A, B, ...), each optionally split into user areas 0..15 "
                          "(default with no program and no drives: ./disks if present, "
                          "else you are asked whether to create it with A..P, user area 0)")
-    ap.add_argument("--charset", "-charset", choices=["fi"],
+    ap.add_argument("--charset", "-charset", choices=["fi", "cp437"],
                     help="fi = Finnish/Swedish 7-bit letters (a-umlaut etc. in the "
                          "[ \\ ] { | } positions)")
     ap.add_argument("--backspace", "-backspace", choices=["bs", "del"], default="bs",

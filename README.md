@@ -43,6 +43,11 @@ letters (`B:`), it has some ZCPR-style extras (see `HELP name`):
   WordStar style by default, the keys BBC BASIC (Z80) expects for programs named `BBC*`.
 * Line editing - Left/Right, Home/End, Delete, Backspace, `^U` (clear), Up/Down (earlier
   commands) work in the prompt, so a pasted line can be corrected before Enter.
+* `PLAY file [fps|baud]` - play an ANSI/terminal stream (e.g. an ANSI "Bad Apple"). Frames
+  start at `ESC[H`, `ESC[1;1H` or a form feed and are paced at fps (default 30 when the file
+  has frames; a number above 240 is a baud rate, default 9600 otherwise). Stops at `^Z`
+  (SAUCE record ignored); `q`/Esc aborts. Start with `--charset cp437` for IBM block
+  characters (the terminal needs a UTF-8 font with block glyphs).
 * `cmd1 ; cmd2` - several commands on one line; lines starting with `#` are comments.
 * Startup file - `--startup FILE`, or `STARTUP.CPM` on A:0, run when the prompt starts.
 * `COPY src [dst]` - copy files; wildcards, a destination drive and user area (`B3:`), or a
