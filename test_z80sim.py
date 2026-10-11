@@ -198,6 +198,38 @@ class FastCoreTests(unittest.TestCase):
                 if fast.halted:
                     break
 
+    def test_every_prefixed_opcode_matches_step(self):
+        import random
+        rnd = random.Random(2026)
+        for prefix in (0xCB, 0xED, 0xDD, 0xFD):
+            for op in range(256):
+                for rep in range(3):
+                    mem = bytearray(rnd.randbytes(0x10000))
+                    pc = rnd.choice([0x1000, 0x8000, 0xFFFE, 0xFFFF, 0x0])
+                    mem[pc] = prefix
+                    mem[(pc + 1) & 0xFFFF] = op
+                    if prefix in (0xDD, 0xFD) and op == 0xCB and rep % 2:
+                        mem[(pc + 3) & 0xFFFF] = rnd.choice([0x06, 0x46, 0x86, 0xC6, 0x16, 0x3E])
+                    fast, slow = Z80(bytearray(mem)), _SlowZ80(bytearray(mem))
+                    regs = [rnd.getrandbits(8) for _ in range(8)]
+                    sp = rnd.choice([0x4000, 0x0, 0xFFFF, 0x1])
+                    ix, iy = rnd.getrandbits(16), rnd.getrandbits(16)
+                    f = rnd.getrandbits(8)
+                    bc = rnd.choice([0, 1, 2, 5, rnd.getrandbits(16)])
+                    for c in (fast, slow):
+                        c.r[:] = regs
+                        c.f, c.pc, c.sp, c.x[:] = f, pc, sp, [ix, iy]
+                        c.bc = bc
+                        c.wz = 0x1234
+                        c.rr = 0x7E
+                        c.iff1 = c.iff2 = bool(rep & 1)
+                    n1 = fast.run_fast(max_steps=1)
+                    n2 = slow.run_fast(max_steps=1)
+                    msg = "prefix %02X op %02X rep %d" % (prefix, op, rep)
+                    self.assertEqual(n1, n2, msg)
+                    self.assertEqual(self._state(fast), self._state(slow), msg)
+                    self.assertEqual(fast.mem, slow.mem, msg)
+
     def test_ldir_is_fast(self):
         c = Z80()
         c.mem[0:3] = bytes([0xED, 0xB0, 0x76])

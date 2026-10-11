@@ -59,6 +59,7 @@ class Z80:
         self.nmi = False
         self._ei = False
         self.tx = 0               # extra T-states accumulated by fast handlers
+        self.rx = 0               # extra R increments (second byte of prefixed opcodes) by fast handlers
         self.tstates = 0
 
     # convenient register views ---------------------------------------------
@@ -428,7 +429,8 @@ class Z80:
                 if pc & 0x20000:
                     i -= 1
                     ts -= 0              # prefix entries have a base time of 0
-                self.rr = (self.rr & 0x80) | ((self.rr + i) & 0x7F)
+                self.rr = (self.rr & 0x80) | ((self.rr + i + self.rx) & 0x7F)
+                self.rx = 0
                 self.tstates += ts + self.tx
                 self.tx = 0
             done += i
@@ -537,9 +539,9 @@ class Z80:
         if type(self).rd is not Z80.rd or type(self).wr is not Z80.wr or "rd" in d or "wr" in d:
             return False
         refs = getattr(self, "_fast_refs", None)
-        if refs is None or refs[0] is not self.r or refs[1] is not self.mem or refs[2] is not self.alt:
+        if refs is None or refs[0] is not self.r or refs[1] is not self.mem or refs[2] is not self.alt or refs[3] is not self.x:
             self._fast_ops, self._fast_t = _build_fast_ops(self)
-            self._fast_refs = (self.r, self.mem, self.alt)
+            self._fast_refs = (self.r, self.mem, self.alt, self.x)
         return True
 
     def run_until_halt(self, max_steps=10_000_000):
@@ -1018,8 +1020,8 @@ def _op_template(op):
     x, y, z = op >> 6, (op >> 3) & 7, op & 7
     p, q = y >> 1, y & 1
     R = ["return pc"]
-    if op in (0xCB, 0xDD, 0xED, 0xFD):
-        return ["return ((pc-1)&65535)|131072"], 0
+    if op in (0xCB, 0xED, 0xDD, 0xFD):
+        return ["return PRE%02X[mem[pc]](pc)" % op], 0     # sub-table: pc is at the 2nd byte
     if op == 0x76:
         return ["cpu.halted=True", "return pc|65536"], 4
     if op == 0xFB:
@@ -1161,20 +1163,187 @@ def _op_template(op):
     return _PUSH_PC + ["cpu.wz=%d" % (y * 8), "return %d" % (y * 8)], 11
 
 
+_CODE_CACHE = {}          # compiled handler sources, shared by every Z80 instance
+_POST = ["if cpu.irq or cpu.nmi or cpu.halted or cpu._ei: return cpu.pc|65536", "return cpu.pc"]
+_NEXT = ["pc=(pc+1)&65535", "cpu.rx+=1"]           # step over the second byte of a prefixed opcode
+_FALL = ["return ((pc-1)&65535)|131072"]          # let run_fast's step()/block path take it
+_RP = ["(r[0]<<8)|r[1]", "(r[2]<<8)|r[3]", _HL, "cpu.sp"]
+
+
+def _cb_template(op):
+    """CB xx on a register or (HL): body lines and total T-states (pc at the 2nd byte)."""
+    x, y, z = op >> 6, (op >> 3) & 7, op & 7
+    if z == 6:
+        pre = ["addr=" + _HL, "v=mem[addr]"]
+        t = 12 if x == 1 else 15
+    else:
+        pre = ["v=r[%d]" % z]
+        t = 8
+    body = _NEXT + ["cpu.tx+=%d" % t] + pre
+    if x == 1:
+        src = "(cpu.wz>>8)" if z == 6 else "v"
+        body += ["f=(cpu.f&1)|16|(%s&40)" % src, "if not v&%d:" % (1 << y), "    f|=68"]
+        if y == 7:
+            body += ["else:", "    f|=128"]
+        return body + ["cpu.f=f", "return pc"], t
+    if x == 0:
+        calc = {0: ["c=v>>7", "res=((v<<1)|c)&255"],
+                1: ["c=v&1", "res=(v>>1)|(c<<7)"],
+                2: ["c=v>>7", "res=((v<<1)|(cpu.f&1))&255"],
+                3: ["c=v&1", "res=(v>>1)|((cpu.f&1)<<7)"],
+                4: ["c=v>>7", "res=(v<<1)&255"],
+                5: ["c=v&1", "res=(v>>1)|(v&128)"],
+                6: ["c=v>>7", "res=((v<<1)|1)&255"],
+                7: ["c=v&1", "res=v>>1"]}[y] + ["cpu.f=SZ53P[res]|c"]
+    elif x == 2:
+        calc = ["res=v&%d" % (~(1 << y) & 255)]
+    else:
+        calc = ["res=v|%d" % (1 << y)]
+    store = ["mem[addr]=res"] if z == 6 else ["r[%d]=res" % z]
+    return body + calc + store + ["return pc"], t
+
+
+def _ed_template(op):
+    """ED xx: body lines for the common ones, None = use cpu._ed() (pc at the 2nd byte)."""
+    x, y, z = op >> 6, (op >> 3) & 7, op & 7
+    p, q = y >> 1, y & 1
+    if x == 2 and z < 4 and y >= 4:
+        return _FALL
+    if x != 1:
+        return None
+    if op in (0x4F, 0x5F):
+        return _FALL                       # LD R,A / LD A,R: R is only folded in at sync points
+    if z == 2:
+        a_b = ["a=" + _HL, "b=" + _RP[p]]
+        if q == 0:
+            calc = ["res=a-b-(cpu.f&1)", "r16=res&65535",
+                    "cpu.f=((r16>>8)&168)|(64 if r16==0 else 0)|(((a^b^res)>>8)&16)"
+                    "|(((a^b)&(a^r16)&32768)>>13)|2|((res>>16)&1)"]
+        else:
+            calc = ["res=a+b+(cpu.f&1)", "r16=res&65535",
+                    "cpu.f=((r16>>8)&168)|(64 if r16==0 else 0)|(((a^b^res)>>8)&16)"
+                    "|(((a^r16)&(b^r16)&32768)>>13)|((res>>16)&1)"]
+        return _NEXT + ["cpu.tx+=15"] + a_b + calc + \
+            ["cpu.wz=(a+1)&65535", "r[4]=r16>>8", "r[5]=r16&255", "return pc"]
+    if z == 3:
+        body = _NEXT + ["cpu.tx+=20"] + _FETCH_NN
+        if q == 0:
+            if p == 3:
+                body += ["v=cpu.sp", "mem[nn]=v&255", "mem[(nn+1)&65535]=v>>8"]
+            else:
+                body += ["mem[nn]=r[%d]" % (2 * p + 1), "mem[(nn+1)&65535]=r[%d]" % (2 * p)]
+        else:
+            if p == 3:
+                body += ["cpu.sp=mem[nn]|(mem[(nn+1)&65535]<<8)"]
+            else:
+                body += ["r[%d]=mem[nn]" % (2 * p + 1), "r[%d]=mem[(nn+1)&65535]" % (2 * p)]
+        return body + ["cpu.wz=(nn+1)&65535", "return pc"]
+    if z == 4:
+        return _NEXT + ["cpu.tx+=8", "v=r[7]", "r[7]=0"] + _ALU[2] + ["return pc"]
+    if z == 5:
+        return _NEXT + ["cpu.tx+=14", "cpu.iff1=cpu.iff2"] + _POP_PC + ["cpu.wz=pc",
+                "if cpu.irq or cpu.nmi: return pc|65536", "return pc"]
+    return None
+
+
+def _ix_template(op, k):
+    """DD/FD xx: body lines for the common ones, None = use cpu._main/_cb with xy set."""
+    x, y, z = op >> 6, (op >> 3) & 7, op & 7
+    p, q = y >> 1, y & 1
+    IX = "cpu.x[%d]" % k
+    disp = _NEXT + ["d=mem[pc]", "pc=(pc+1)&65535", "if d>127: d-=256",
+                    "addr=(%s+d)&65535" % IX, "cpu.wz=addr"]
+    if op in (0xDD, 0xFD, 0xED):
+        return _FALL
+    if op == 0x21:
+        return _NEXT + ["cpu.tx+=14"] + _FETCH_NN + ["%s=nn" % IX, "return pc"]
+    if op == 0x22:
+        return _NEXT + ["cpu.tx+=20"] + _FETCH_NN + ["v=" + IX, "mem[nn]=v&255",
+                "mem[(nn+1)&65535]=v>>8", "cpu.wz=(nn+1)&65535", "return pc"]
+    if op == 0x2A:
+        return _NEXT + ["cpu.tx+=20"] + _FETCH_NN + ["%s=mem[nn]|(mem[(nn+1)&65535]<<8)" % IX,
+                "cpu.wz=(nn+1)&65535", "return pc"]
+    if op in (0x23, 0x2B):
+        return _NEXT + ["cpu.tx+=10", "%s=(%s%s1)&65535" % (IX, IX, "+" if op == 0x23 else "-"),
+                        "return pc"]
+    if op in (0x09, 0x19, 0x29, 0x39):
+        src = IX if op == 0x29 else ["(r[0]<<8)|r[1]", "(r[2]<<8)|r[3]", "", "cpu.sp"][p]
+        return _NEXT + ["cpu.tx+=15", "a=" + IX, "b=" + src, "res=a+b",
+                "cpu.f=(cpu.f&196)|((res>>8)&40)|(((a^b^res)>>8)&16)|((res>>16)&1)",
+                "cpu.wz=(a+1)&65535", "%s=res&65535" % IX, "return pc"]
+    if op == 0xE1:
+        return _NEXT + ["cpu.tx+=14", "sp=cpu.sp", "%s=mem[sp]|(mem[(sp+1)&65535]<<8)" % IX,
+                        "cpu.sp=(sp+2)&65535", "return pc"]
+    if op == 0xE5:
+        return _NEXT + ["cpu.tx+=15", "v=" + IX, "sp=cpu.sp", "mem[(sp-1)&65535]=v>>8",
+                        "mem[(sp-2)&65535]=v&255", "cpu.sp=(sp-2)&65535", "return pc"]
+    if op == 0xE9:
+        return ["cpu.rx+=1", "cpu.tx+=8", "return " + IX]
+    if op == 0xF9:
+        return _NEXT + ["cpu.tx+=10", "cpu.sp=" + IX, "return pc"]
+    if op == 0xE3:
+        return _NEXT + ["cpu.tx+=23", "sp=cpu.sp", "sp1=(sp+1)&65535", "lo=mem[sp]", "hi=mem[sp1]",
+                "v=" + IX, "mem[sp]=v&255", "mem[sp1]=v>>8", "%s=(hi<<8)|lo" % IX,
+                "cpu.wz=(hi<<8)|lo", "return pc"]
+    if x == 1 and z == 6 and y != 6:                     # LD r,(IX+d)
+        return disp + ["cpu.tx+=19", "r[%d]=mem[addr]" % y, "return pc"]
+    if x == 1 and y == 6 and z != 6:                     # LD (IX+d),r
+        return disp + ["cpu.tx+=19", "mem[addr]=r[%d]" % z, "return pc"]
+    if op == 0x36:                                       # LD (IX+d),n
+        return disp + ["cpu.tx+=19"] + _FETCH_N + ["mem[addr]=n", "return pc"]
+    if op in (0x34, 0x35):                               # INC/DEC (IX+d)
+        if op == 0x34:
+            calc = ["res=(v+1)&255",
+                    "cpu.f=(cpu.f&1)|SZ53[res]|(16 if (v&15)==15 else 0)|(4 if v==127 else 0)"]
+        else:
+            calc = ["res=(v-1)&255",
+                    "cpu.f=(cpu.f&1)|SZ53[res]|(16 if (v&15)==0 else 0)|(4 if v==128 else 0)|2"]
+        return disp + ["cpu.tx+=23", "v=mem[addr]"] + calc + ["mem[addr]=res", "return pc"]
+    if x == 2 and z == 6:                                # ALU A,(IX+d)
+        return disp + ["cpu.tx+=19", "v=mem[addr]"] + _ALU[y] + ["return pc"]
+    return None
+
+
 def _build_fast_ops(cpu):
-    """Compile the handler table and base-T-state table for this CPU instance."""
+    """Compile the handler tables for this CPU instance: the one-byte table with its base
+    T-states, and the sub-tables for the CB, ED, DD and FD prefixes."""
     ns = {}
+    names = "cpu, r, alt, mem, SZ53, SZ53P, PRECB=None, PREED=None, PREDD=None, PREFD=None"
+
+    def compile_one(body, tag, **pre):
+        src = "def make(%s):\n    def h(pc):\n" % names + \
+              "".join("        %s\n" % l for l in body) + "    return h\n"
+        code = _CODE_CACHE.get(src)
+        if code is None:
+            code = _CODE_CACHE[src] = compile(src, "<z80 %s>" % tag, "exec")
+        exec(code, ns)
+        return ns["make"](cpu, cpu.r, cpu.alt, cpu.mem, SZ53, SZ53P, **pre)
+
+    cb = [compile_one(_cb_template(o)[0], "CB %02X" % o) for o in range(256)]
+    ed = []
+    for o in range(256):
+        body = _ed_template(o)
+        if body is None:
+            body = ["cpu.xy=None", "cpu.pc=pc", "cpu.tx+=cpu._ed()"] + _POST
+        ed.append(compile_one(body, "ED %02X" % o))
+    ixs = []
+    for k in (0, 1):
+        tab = []
+        for o in range(256):
+            body = _ix_template(o, k)
+            if body is None:
+                body = ["cpu.xy=%d" % k, "cpu.pc=(pc+1)&65535", "cpu._inc_r()",
+                        "cpu.tx+=4+cpu._%s(%s)" % (("cb", "") if o == 0xCB else ("main", str(o)))] + \
+                       ["cpu.xy=None"] + _POST
+            tab.append(compile_one(body, "%s %02X" % ("DD" if k == 0 else "FD", o)))
+        ixs.append(tab)
+    pre = dict(PRECB=cb, PREED=ed, PREDD=ixs[0], PREFD=ixs[1])
     ops = []
     tt = []
     for op in range(256):
         body, t = _op_template(op)
         if body is None:
-            body = ["cpu.xy=None", "cpu.pc=pc", "cpu.tx+=cpu._main(%d)" % op,
-                    "if cpu.irq or cpu.nmi or cpu.halted or cpu._ei: return cpu.pc|65536",
-                    "return cpu.pc"]
-        src = "def make(cpu, r, alt, mem, SZ53, SZ53P):\n    def h(pc):\n" + \
-              "".join("        %s\n" % l for l in body) + "    return h\n"
-        exec(compile(src, "<z80 op %02X>" % op, "exec"), ns)
-        ops.append(ns["make"](cpu, cpu.r, cpu.alt, cpu.mem, SZ53, SZ53P))
+            body = ["cpu.xy=None", "cpu.pc=pc", "cpu.tx+=cpu._main(%d)" % op] + _POST
+        ops.append(compile_one(body, "op %02X" % op, **pre))
         tt.append(t)
     return ops, tt
