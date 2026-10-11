@@ -1062,11 +1062,149 @@ class CPM:
         finally:
             self._set_drive(drive)
 
+    # ------------------------------------------------------------------ VIEW
+    def _ccp_view(self, path, name):
+        """Pager for files of any size: the file is memory-mapped and only an array of
+        line starts is kept, so it is not limited by the 64K of CP/M."""
+        import mmap, shutil
+        from array import array
+        from bisect import bisect_right
+        size = os.path.getsize(path)
+        if size == 0:
+            self._print("\n" + self._c("red", "EMPTY FILE"))
+            return
+        out = self.console
+        with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            end = mm.find(b"\x1a")
+            end = size if end < 0 else end
+            starts = array("Q", [0])
+            pos = 0
+            while pos < end:                      # index in 16 MB blocks, in C speed
+                parts = mm[pos:min(end, pos + (16 << 20))].split(b"\n")
+                p = pos
+                for part in parts[:-1]:
+                    p += len(part) + 1
+                    starts.append(p)
+                pos += sum(map(len, parts)) + len(parts) - 1
+            if starts[-1] >= end:                 # text ends with a newline
+                starts.pop()
+            n = len(starts)
+
+            def line(i):
+                e = starts[i + 1] if i + 1 < n else end
+                return mm[starts[i]:e].rstrip(b"\r\n")
+
+            def emit(text):
+                for ch in text:
+                    out.write(ord(ch))
+
+            def cells(raw, col, width):
+                res, x = [], 0
+                for b in raw:
+                    if b == 9:
+                        w = 8 - x % 8
+                        piece = [" "] * w
+                    elif b < 32:
+                        piece = ["^", chr(b + 64)]
+                    elif b == 127:
+                        piece = ["^", "?"]
+                    else:
+                        piece = [chr(b)]
+                    for p in piece:
+                        if col <= x < col + width:
+                            res.append(p)
+                        x += 1
+                return "".join(res)
+
+            top, col, last, msg = 0, 0, "", ""
+            while True:
+                cols, rows = shutil.get_terminal_size((80, 24))
+                page = max(1, rows - 1)
+                top = max(0, min(top, max(0, n - page)))
+                buf = ["\x1b[H"]
+                for r in range(page):
+                    i = top + r
+                    buf.append((cells(line(i), col, cols) if i < n else "~") + "\x1b[K\r\n")
+                shown = min(n, top + page)
+                pct = 100 * shown // n
+                stat = " %s  lines %d-%d of %d  %d%%  %s" % (name, top + 1, shown, n, pct, msg)
+                buf.append("\x1b[7m" + stat[:cols - 1].ljust(cols - 1) + "\x1b[0m")
+                emit("".join(buf))
+                out.flush()
+                msg = ""
+                k = out.read_char()
+                if k is None or k in (0x1B, 0x71, 0x51):             # Esc q Q
+                    break
+                if k in (0x20, 0x03, 0x66):                          # space ^C f
+                    top += page
+                elif k in (0x12, 0x62):                              # ^R b
+                    top -= page
+                elif k in (0x0D, 0x18, 0x6A, 0x0A):                  # Enter ^X j
+                    top += 1
+                elif k in (0x05, 0x6B):                              # ^E k
+                    top -= 1
+                elif k == 0x04 or k == 0x6C:                         # ^D l
+                    col += 8
+                elif k == 0x13 or k == 0x68:                         # ^S h
+                    col = max(0, col - 8)
+                elif k == 0x11:                                      # ^Q then S / D (Home, End)
+                    k2 = out.read_char()
+                    if k2 in (0x13, 0x53, 0x73):
+                        top, col = 0, 0
+                    elif k2 in (0x04, 0x44, 0x64):
+                        top = n
+                elif k in (0x67,):                                   # g
+                    top, col = 0, 0
+                elif k == 0x47:                                      # G
+                    top = n
+                elif k in (0x2F, 0x6E, 0x4E):                        # / n N
+                    if k == 0x2F:
+                        emit("\x1b[%d;1H\x1b[K/" % rows)
+                        out.flush()
+                        text = b""
+                        while True:
+                            c = out.read_char()
+                            if c in (None, 0x0D, 0x0A):
+                                break
+                            if c == 0x1B:
+                                text = b""
+                                break
+                            if c in (0x08, 0x7F):
+                                if text:
+                                    text = text[:-1]
+                                    emit("\b \b")
+                            elif c >= 32:
+                                text += bytes([c])
+                                out.write(c)
+                            out.flush()
+                        if text:
+                            last = text
+                    if not last:
+                        continue
+                    pat = last.lower()
+                    found = None
+                    step = -1 if k == 0x4E else 1
+                    first = top if k == 0x2F else top + step
+                    for j in range(n):                # wraps round the file
+                        i = (first + step * j) % n
+                        if pat in line(i).lower():
+                            found = i
+                            break
+                    if found is None:
+                        msg = "Not found: " + last.decode("latin-1")
+                    else:
+                        top = found
+            emit("\x1b[%d;1H\x1b[K" % rows)
+            out.flush()
+
     _HELP = {
         "DIR": ("DIR [spec]", "List files. Wildcards: ? matches one character, * the rest of\n"
                 "the name or type.   DIR   DIR *.COM   DIR B:*.TXT   DIR A*.*"),
         "ERA": ("ERA spec", "Delete files.   ERA OLD.TXT   ERA *.BAK"),
         "REN": ("REN new=old", "Rename a file.   REN NEW.TXT=OLD.TXT"),
+        "VIEW": ("VIEW file", "Page through a file of any size.  Space/b or PgDn/PgUp: page;\n"
+                 "Enter or Down/Up (j/k): line;  Left/Right: sideways;  g/G or Home/End: start/end;\n"
+                 "/text: search (case ignored), n/N: next/previous;  q or Esc: quit."),
         "TYPE": ("TYPE file", "Show a text file on the screen.   TYPE READ.ME"),
         "TIME": ("TIME [ON|OFF]", "Show timing after every program run: real time here, instructions,\n"
                  "T-states and the time a 4 MHz Z80 would need. Also --time on the command line."),
@@ -1116,6 +1254,7 @@ class CPM:
             "\n  USER n          switch user area      B:             switch drive"
             "\n  PATH [list]     command search path   ALIAS n=text   short names"
             "\n  TIME [ON|OFF]   show run timing       cmd ; cmd      several commands"
+            "\n  VIEW file       page through a file of any size (HELP VIEW)"
             "\n  HELP [command]  this help (or ?)      EXIT           leave (BYE, QUIT)"
             "\n"
             "\nAnything else runs NAME.COM:  MBASIC   DUMP FILE.TXT   B:PROG"
@@ -1209,6 +1348,15 @@ class CPM:
                       self._parse_fcb(new) + bytes(8))
             if self._f_rename(0x5C) != 0:
                 self._print("\n" + self._c("red", "NO FILE"))
+        elif cmd == "VIEW" and args:
+            self._make_fcb(0x5C, args[0])
+            path = self._fcb_path(0x5C)
+            if path is None:
+                self._print("\n" + self._c("red", "NO FILE"))
+            elif not self.console._raw:
+                self._ccp_command("TYPE " + args[0])      # no keyboard to page with
+            else:
+                self._ccp_view(path, os.path.basename(path))
         elif cmd == "TYPE" and args:
             self._make_fcb(0x5C, args[0])
             path = self._fcb_path(0x5C)
