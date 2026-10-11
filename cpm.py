@@ -610,7 +610,8 @@ class CPM:
             self._print("\nLua needs the lupa package:  pip install lupa")
             return 0xFF
         mem = self.cpu.mem
-        mem[(de + 9) & 0xFFFF], mem[(de + 10) & 0xFFFF], mem[(de + 11) & 0xFFFF] = 0x4C, 0x55, 0x41
+        if all((mem[(de + i) & 0xFFFF] & 0x7F) == 0x20 for i in (9, 10, 11)):   # no extension typed
+            mem[(de + 9) & 0xFFFF], mem[(de + 10) & 0xFFFF], mem[(de + 11) & 0xFFFF] = 0x4C, 0x55, 0x41
         path = self._fcb_path(de)
         if path is None:
             self._print("\n" + self._c("red", "Lua script not found"))
