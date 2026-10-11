@@ -1321,7 +1321,9 @@ def main(argv=None):
                     help="map another drive, e.g. --drive B=/tmp/disk")
     ap.add_argument("--disk", "-disk", metavar="DIR",
                     help="directory holding one sub-directory per drive letter "
-                         "(A, B, ...), each optionally split into user areas 0..15")
+                         "(A, B, ...), each optionally split into user areas 0..15 "
+                         "(default with no program and no drives: ./disk if present, "
+                         "else you are asked whether to create it with A..P, user area 0)")
     ap.add_argument("--charset", "-charset", choices=["fi"],
                     help="fi = Finnish/Swedish 7-bit letters (a-umlaut etc. in the "
                          "[ \\ ] { | } positions)")
@@ -1337,6 +1339,20 @@ def main(argv=None):
                     help="after each program run print elapsed time, instruction count and "
                          "the equivalent time on a 4 MHz Z80")
     ns = ap.parse_args(argv)
+    if not (ns.disk or ns.dir or ns.drive or ns.program):
+        # No disks given: use ./disk if it exists; else offer to create it (A..P, user 0).
+        if os.path.isdir("disk"):
+            ns.disk = "disk"
+        elif sys.stdin.isatty():
+            try:
+                ans = input("No disks given. Create folder %s with drives A: to P: here? [Y/n] "
+                            % os.path.abspath("disk")).strip().lower()
+            except EOFError:
+                ans = "n"
+            if ans in ("", "y", "yes"):
+                ns.disk = "disk"
+                for c in "ABCDEFGHIJKLMNOP":
+                    os.makedirs(os.path.join(ns.disk, c, "0"), exist_ok=True)
     drives = {}
     if ns.disk:
         for entry in sorted(os.listdir(ns.disk)):
@@ -1349,7 +1365,7 @@ def main(argv=None):
         letter, _, path = spec.partition("=")
         drives[letter.upper()] = path
     if not drives and not ns.program:
-        drives["A"] = "."
+        drives["A"] = "."      # --disk given but empty
     start_drive, start_user = 0, 0
     if ns.program:
         # Start in the program's own disk: if its folder is a mapped drive (or one

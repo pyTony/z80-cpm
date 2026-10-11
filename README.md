@@ -14,7 +14,7 @@ A Z80 CPU simulator and a CP/M 2.2 emulator, both in pure Python. No dependencie
 
 ## Usage
 
-    python cpm.py                          # CP/M prompt, drive A: = current folder
+    python cpm.py                          # CP/M prompt on ./disk (offers to create A..P there)
     python cpm.py PROGRAM.COM args         # run a program (starts on that program's disk)
     python cpm.py --disk DISKS PROGRAM.COM # DISKS/A, DISKS/B ... one folder per drive
     python cpm.py --drive B=some/folder
