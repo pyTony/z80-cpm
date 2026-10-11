@@ -394,6 +394,14 @@ class Z80:
             if slow:
                 if self.halted or self.pc >= stop_pc:
                     break
+                if (mem[self.pc] == 0xED and not (self.irq or self.nmi or self._ei)
+                        and mem[(self.pc + 1) & 0xFFFF] in (0xB0, 0xB8, 0xB1, 0xB9)):
+                    k = self._block_run(mem[(self.pc + 1) & 0xFFFF], budget)
+                    if k:                       # a whole LDIR/LDDR/CPIR/CPDR in one go
+                        done += k
+                        budget -= k
+                        slow = bool(self.irq or self.nmi or self.halted or self._ei)
+                        continue
                 step()
                 done += 1
                 budget -= 1
@@ -432,6 +440,96 @@ class Z80:
             if self.halted or pc >= stop_pc:
                 break
         return done
+
+    def _block_run(self, op, budget):
+        """Run up to `budget` iterations of LDIR/LDDR/CPIR/CPDR (op = ED's second byte)
+        at once, with the same final state step() would give.  Returns the number of
+        iterations done, or 0 to leave the instruction to step() (address wrap-around,
+        or the instruction would overwrite itself)."""
+        mem = self.mem
+        pc = self.pc
+        r = self.r
+        back = op & 8
+        bc = self.bc or 0x10000
+        k = bc if bc < budget else budget
+        hl, de = self.hl, self.de
+        # stop at the end of memory; the next call carries on after the wrap-around
+        if not back:
+            k = min(k, 0x10000 - hl, 0x10000 - de) if op == 0xB0 else min(k, 0x10000 - hl)
+        else:
+            k = min(k, hl + 1, de + 1) if op == 0xB8 else min(k, hl + 1)
+        step = -1 if back else 1
+        wz0 = self.wz
+        if op in (0xB0, 0xB8):                                 # LDIR / LDDR
+            lo = de - k + 1 if back else de
+            if lo <= pc + 1 and pc <= lo + k - 1:              # would patch itself:
+                if not back and de < pc:                       # run up to the instruction
+                    k = pc - de
+                elif back and de > pc + 1:
+                    k = de - pc - 1
+                else:
+                    return 0                                   # let step() do it
+            if not back:
+                d = de - hl
+                if 0 < d < k:                                  # overlap: pattern repeats
+                    pat = bytes(mem[hl:de])
+                    mem[de:de + k] = (pat * (k // d + 1))[:k]
+                else:
+                    mem[de:de + k] = mem[hl:hl + k]
+                last = de + k - 1
+            else:
+                d = hl - de
+                if 0 < d < k:
+                    pat = bytes(mem[hl - d + 1:hl + 1])[::-1]
+                    mem[de - k + 1:de + 1] = ((pat * (k // d + 1))[:k])[::-1]
+                else:
+                    mem[de - k + 1:de + 1] = mem[hl - k + 1:hl + 1]
+                last = de - k + 1
+            v = mem[last]
+            self.hl = (hl + step * k) & 0xFFFF
+            self.de = (de + step * k) & 0xFFFF
+            left = self.bc = (bc - k) & 0xFFFF
+            n = (v + r[7]) & 0xFF
+            f = (self.f & (SF | ZF | CF)) | (n & 0x08) | ((n & 0x02) << 4)
+            if left:
+                f |= PF
+            self.f = f
+            finished = left == 0
+        else:                                                  # CPIR / CPDR
+            a = r[7]
+            if not back:
+                j = mem.find(a, hl, hl + k)
+                if j >= 0:
+                    k = j - hl + 1
+            else:
+                j = mem.rfind(a, hl - k + 1, hl + 1)
+                if j >= 0:
+                    k = hl - j + 1
+            last = hl + step * (k - 1)
+            v = mem[last]
+            res = (a - v) & 0xFF
+            h = (a ^ v ^ res) & 0x10
+            self.hl = (hl + step * k) & 0xFFFF
+            left = self.bc = (bc - k) & 0xFFFF
+            n = res - (1 if h else 0)
+            f = ((self.f & CF) | NF | (res & SF) | (ZF if res == 0 else 0) |
+                 h | (n & 0x08) | ((n & 0x02) << 4))
+            if left:
+                f |= PF
+            self.f = f
+            finished = left == 0 or res == 0
+        if finished:
+            self.pc = (pc + 2) & 0xFFFF
+            self.tstates += 21 * (k - 1) + 16
+            if op in (0xB1, 0xB9):
+                self.wz = ((pc + 1 + step) if k > 1 else (wz0 + step)) & 0xFFFF
+            elif k > 1:
+                self.wz = (pc + 1) & 0xFFFF
+        else:
+            self.tstates += 21 * k
+            self.wz = (pc + 1) & 0xFFFF
+        self.rr = (self.rr & 0x80) | ((self.rr + 2 * k) & 0x7F)
+        return k
 
     def _fast_ready(self):
         """Build (or reuse) the fast opcode table; False if rd/wr are overridden."""

@@ -160,6 +160,58 @@ class FastCoreTests(unittest.TestCase):
                 if fast.halted:
                     break
 
+    def test_block_instructions_match_step(self):
+        import random
+        rnd = random.Random(7)
+        for case in range(120):
+            op = rnd.choice([0xB0, 0xB8, 0xB1, 0xB9])
+            pc = rnd.choice([0x100, 0x8000, 0xFFF0, 0x0, 0xFFFE])
+            mem = bytearray(rnd.choice([0, 1, 2, 7, 255]) if rnd.random() < 0.5 else rnd.getrandbits(8)
+                            for _ in range(0x10000))
+            mem[pc] = 0xED
+            mem[(pc + 1) & 0xFFFF] = op
+            mem[(pc + 2) & 0xFFFF] = 0x76
+            fast, slow = Z80(bytearray(mem)), _SlowZ80(bytearray(mem))
+            hl = rnd.choice([rnd.randrange(0x10000), 0x2000, 0xFFF0, 5, pc, pc - 3])
+            de = rnd.choice([rnd.randrange(0x10000), hl + 1, hl - 1, hl + 3, hl - 3, hl + 40, pc - 5, pc + 2])
+            bc = rnd.choice([0, 1, 2, 3, 10, 100, 1000, rnd.randrange(0x10000)])
+            regs = [rnd.getrandbits(8) for _ in range(8)]
+            for c in (fast, slow):
+                c.r[:] = regs
+                c.f = case * 37 & 0xFF
+                c.pc = pc
+                c.hl, c.de, c.bc = hl & 0xFFFF, de & 0xFFFF, bc
+                c.wz = 0x1234
+                c.rr = 0x85
+            if op in (0xB1, 0xB9) and rnd.random() < 0.7:        # make CPIR hit something
+                a = fast.r[7]
+                p = (hl + rnd.randrange(0, 50) * (1 if op == 0xB1 else -1)) & 0xFFFF
+                for c in (fast, slow):
+                    c.mem[p] = a
+            for _ in range(4):
+                k = rnd.choice([1, 2, 3, 5, 50, 100000])
+                n1 = fast.run_fast(max_steps=k)
+                n2 = slow.run_fast(max_steps=k)
+                self.assertEqual(n1, n2, "case %d op %02X" % (case, op))
+                self.assertEqual(self._state(fast), self._state(slow), "case %d op %02X" % (case, op))
+                self.assertEqual(fast.mem, slow.mem, "case %d op %02X" % (case, op))
+                if fast.halted:
+                    break
+
+    def test_ldir_is_fast(self):
+        c = Z80()
+        c.mem[0:3] = bytes([0xED, 0xB0, 0x76])
+        c.mem[0x4000:0x4100] = bytes(range(256))
+        c.hl, c.de, c.bc = 0x4000, 0x5000, 0x100
+        calls = []
+        orig = c.step
+        c.step = lambda: (calls.append(1), orig())[1]
+        c.run_fast()
+        self.assertEqual(c.mem[0x5000:0x5100], bytes(range(256)))
+        self.assertLessEqual(len(calls), 1)             # just the final HALT
+        self.assertEqual(c.tstates, 21 * 255 + 16 + 4)       # + HALT
+
+
     def test_stop_pc(self):
         c = Z80()
         c.mem[0:6] = bytes([0x00, 0x00, 0x00, 0xC3, 0x00, 0x20])    # 3 NOPs, JP 2000h
