@@ -513,6 +513,136 @@ class Console:
             self.flush()
 
 
+class AnsiScreen:
+    """Minimal ANSI-art screen (80x25 by default): feed() it the byte stream, render() returns
+    the bytes that bring a real terminal up to date with absolute cursor addressing, so the
+    picture does not depend on the width of the terminal (ANSiMation files assume 80
+    columns and wrap on their own)."""
+
+    def __init__(self, cols=80, rows=25):
+        self.cols, self.rows = cols, rows
+        self.cells = [[(32, "")] * cols for _ in range(rows)]
+        self.shown = [[(32, "")] * cols for _ in range(rows)]     # the terminal was cleared
+        self.term_attr = None
+        self.x = self.y = 0
+        self.st = {"b": 0, "bl": 0, "rv": 0, "fg": None, "bg": None}
+        self.pending = b""
+        self.saved = (0, 0)
+
+    def _attr(self):
+        st, p = self.st, []
+        if st["b"]: p.append("1")
+        if st["bl"]: p.append("5")
+        if st["rv"]: p.append("7")
+        if st["fg"] is not None: p.append(str(st["fg"]))
+        if st["bg"] is not None: p.append(str(st["bg"]))
+        return ";".join(p)
+
+    def _sgr(self, params):
+        st = self.st
+        for n in params or [0]:
+            if n == 0: st.update(b=0, bl=0, rv=0, fg=None, bg=None)
+            elif n == 1: st["b"] = 1
+            elif n == 22: st["b"] = 0
+            elif n == 5: st["bl"] = 1
+            elif n == 25: st["bl"] = 0
+            elif n == 7: st["rv"] = 1
+            elif n == 27: st["rv"] = 0
+            elif 30 <= n <= 37 or 90 <= n <= 97: st["fg"] = n
+            elif n == 39: st["fg"] = None
+            elif 40 <= n <= 47 or 100 <= n <= 107: st["bg"] = n
+            elif n == 49: st["bg"] = None
+
+    def _scroll(self):
+        self.cells.pop(0)
+        self.cells.append([(32, "")] * self.cols)
+        self.y = self.rows - 1
+
+    def _csi(self, final, params):
+        n = params[0] if params else 0
+        one = n or 1
+        if final in "Hf":
+            self.y = min(max((params[0] if params else 1) or 1, 1), self.rows) - 1
+            self.x = min(max((params[1] if len(params) > 1 else 1) or 1, 1), self.cols) - 1
+        elif final == "A": self.y = max(0, self.y - one)
+        elif final == "B": self.y = min(self.rows - 1, self.y + one)
+        elif final == "C": self.x = min(self.cols - 1, self.x + one)
+        elif final == "D": self.x = max(0, self.x - one)
+        elif final == "J" and n == 2:
+            self.cells = [[(32, "")] * self.cols for _ in range(self.rows)]
+            self.x = self.y = 0
+        elif final == "K":
+            for i in range(self.x, self.cols):
+                self.cells[self.y][i] = (32, self._attr())
+        elif final == "m": self._sgr(params)
+        elif final == "s": self.saved = (self.x, self.y)
+        elif final == "u": self.x, self.y = self.saved
+
+    def feed(self, data):
+        data = self.pending + data
+        self.pending = b""
+        i, n = 0, len(data)
+        while i < n:
+            c = data[i]
+            if c == 0x1B:
+                if i + 1 >= n:
+                    self.pending = data[i:]
+                    break
+                if data[i + 1] != 0x5B:
+                    i += 2
+                    continue
+                j = i + 2
+                while j < n and (0x30 <= data[j] <= 0x3F):
+                    j += 1
+                if j >= n:
+                    self.pending = data[i:]
+                    break
+                body = data[i + 2:j].decode("ascii", "replace").lstrip("?=<>")
+                params = [int(p) if p.isdigit() else 0 for p in body.split(";")] if body else []
+                self._csi(chr(data[j]), params)
+                i = j + 1
+                continue
+            i += 1
+            if c == 13: self.x = 0
+            elif c == 10:
+                self.y += 1
+                if self.y >= self.rows: self._scroll()
+            elif c == 8: self.x = max(0, self.x - 1)
+            elif c == 9: self.x = min(self.cols - 1, (self.x // 8 + 1) * 8)
+            elif c == 7 or c == 0: pass
+            else:
+                self.cells[self.y][self.x] = (c, self._attr())
+                self.x += 1
+                if self.x >= self.cols:
+                    self.x = 0
+                    self.y += 1
+                    if self.y >= self.rows: self._scroll()
+
+    def render(self):
+        out = bytearray()
+        last = self.term_attr
+        for y in range(self.rows):
+            row, shown = self.cells[y], self.shown[y]
+            x = 0
+            while x < self.cols:
+                if row[x] == shown[x] or (y == self.rows - 1 and x == self.cols - 1):
+                    x += 1      # (the bottom right cell is never written: it could scroll)
+                    continue
+                out += b"\x1b[%d;%dH" % (y + 1, x + 1)
+                while x < self.cols and row[x] != shown[x]:
+                    if y == self.rows - 1 and x == self.cols - 1:
+                        break
+                    ch, at = row[x]
+                    if at != last:
+                        out += b"\x1b[0m" if not at else b"\x1b[0;" + at.encode() + b"m"
+                        last = at
+                    out.append(ch)
+                    shown[x] = row[x]
+                    x += 1
+        self.term_attr = last
+        return bytes(out)
+
+
 class CPM:
     def __init__(self, cpu=None, console=None, drives=None, printer=None):
         self.cpu = cpu if cpu is not None else Z80()
@@ -1278,7 +1408,7 @@ class CPM:
     _FRAME_RE = re.compile(rb"\x1b\[(?:1;1)?H|\x0c")
 
     def _ccp_play(self, args):
-        """PLAY file [fps|baud]: send a terminal/ANSI stream to the screen.  A number up to
+        """PLAY file [fps|baud] [RAW]: send a terminal/ANSI stream to the screen.  A number up to
         240 is frames per second (a frame starts at ESC[H, ESC[1;1H or a form feed);
         a larger number is a baud rate (10 bits per byte).  Default: 30 fps when the file
         has frames, 57600 baud for a SAUCE ANSiMation, else 9600 baud.  Stops at ^Z (a SAUCE record may follow), or on q/Esc."""
@@ -1289,6 +1419,8 @@ class CPM:
             self._print("\n" + self._c("red", "NO FILE"))
             return
         rate = None
+        raw = any(a.upper() == "RAW" for a in args[1:])
+        args = [a for a in args if a.upper() != "RAW"]
         if len(args) > 1:
             try:
                 rate = float(args[1].lower().rstrip("bfps"))
@@ -1311,6 +1443,7 @@ class CPM:
                 if tail[:5] == b"SAUCE" and tail[94:96] == b"\x01\x02":
                     rate = 57600.0      # SAUCE says ANSiMation: cursor moves, no frame marker
             frames = rate <= 240
+            scr = None if (frames or raw) else AnsiScreen()
             t0 = time.perf_counter()
             sent = 0                                    # frames (or bytes) sent
             buf = b""
@@ -1340,7 +1473,11 @@ class CPM:
                         else:
                             buf = b""
                     for seg in segs:
-                        con.write_bytes(seg)
+                        if scr:
+                            scr.feed(seg)
+                            con.write_bytes(scr.render())
+                        else:
+                            con.write_bytes(seg)
                         sent += 1 if frames else len(seg)
                         due = t0 + (sent / rate if frames else sent * 10 / rate)
                         wait = due - time.perf_counter()
@@ -1352,7 +1489,7 @@ class CPM:
                                 done = True
                                 break
             finally:
-                con.write_bytes(b"\x1b[0m\x1b[?25h\r\n")
+                con.write_bytes(b"\x1b[0m\x1b[?25h" + (b"\x1b[%d;1H" % (scr.rows + 1) if scr else b"") + b"\r\n")
 
     _SPEC_RE = re.compile(r"^(?:([A-Za-z])(\d{1,2})?:)?(.*)$")
 

@@ -331,7 +331,7 @@ class CpmTests(unittest.TestCase):
         with open(os.path.join(self.tmp, "0", "T.ANS"), "wb") as f:
             f.write(data)
         cpm, out = make_cpm(self.tmp)
-        cpm._ccp_command("PLAY T.ANS 500")
+        cpm._ccp_command("PLAY T.ANS 200")
         s = out.getvalue()
         self.assertIn("\x1b[HAAA", s)
         self.assertIn("\x1b[HCCC", s)
@@ -354,6 +354,21 @@ class CpmTests(unittest.TestCase):
         cpm._ccp_command("PLAY S.ANS")          # 3000 bytes: 0.5 s at 57600, 3 s at 9600
         self.assertLess(time.time() - t0, 1.5)
         self.assertNotIn("SAUCE", out.getvalue())
+
+    def test_ansi_screen_is_width_independent(self):
+        from cpm import AnsiScreen
+        a, b = AnsiScreen(), AnsiScreen()
+        stream = b"\x1b[2J" + b"\xdb" * 85 + b"\x1b[3;5H\x1b[31mAB\x1b[0m\x1b[2C!"
+        a.feed(stream)
+        self.assertEqual(a.cells[0][79][0], 0xDB)       # wrapped at 80, not at the terminal width
+        self.assertEqual(a.cells[1][4][0], 0xDB)
+        self.assertEqual(a.cells[2][4][0], ord("A"))
+        self.assertEqual(a.cells[2][8][0], ord("!"))
+        out = a.render()
+        self.assertIn(b"\x1b[3;5H", out)
+        b.feed(out)
+        self.assertEqual([[c for c, _ in r] for r in a.cells], [[c for c, _ in r] for r in b.cells])
+        self.assertEqual(a.render(), b"")               # nothing changed, nothing sent
 
     def test_copy_command(self):
         for d in ("A", "B"):
