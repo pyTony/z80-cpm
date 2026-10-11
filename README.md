@@ -35,6 +35,10 @@ letters (`B:`), it has some ZCPR-style extras (see `HELP name`):
   Elements are drive+user (`A0:`, `B3:`, `$0:` = user 0 of the current drive). Default
   `$0: A0:`. A typed drive (`B:PROG`) searches only that drive.
 * `ALIAS name=text`, `UNALIAS name` - short names for command lines.
+* Disk size - STAT and other programs see an 8 MB drive (4K blocks, 1024 directory
+  entries) whose free space is computed from the real files in all user areas of the
+  folder; with more than 4 MB the block size grows (up to 32 MB), beyond that it reads full.
+  Nothing stops a write, the limit is only what STAT reports.
 * Line editing - Left/Right, Home/End, Delete, Backspace, `^U` (clear), Up/Down (earlier
   commands) work in the prompt, so a pasted line can be corrected before Enter.
 * `cmd1 ; cmd2` - several commands on one line; lines starting with `#` are comments.

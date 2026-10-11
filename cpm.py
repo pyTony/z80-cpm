@@ -40,6 +40,7 @@ TPA = 0x0100
 BDOS_BASE = 0xFD00
 BDOS_ENTRY = BDOS_BASE + 6
 DPB_ADDR = BDOS_BASE + 0x80
+ALV_ADDR = 0xFF00                    # allocation vector (BDOS 27), up to 256 bytes
 BIOS_BASE = 0xFE00
 BIOS_ENTRIES = ("BOOT", "WBOOT", "CONST", "CONIN", "CONOUT", "LIST", "PUNCH",
                 "READER", "HOME", "SELDSK", "SETTRK", "SETSEC", "SETDMA",
@@ -478,6 +479,7 @@ class CPM:
         self._users = {k: os.path.isdir(os.path.join(v, "0"))
                        for k, v in self.drives.items()}
         self.printer = printer or (lambda b: None)
+        self._bls, self._exm = 4096, 1
         self.dma = 0x80
         self.drive = 0           # 0 = A:
         self.user = 0
@@ -504,8 +506,8 @@ class CPM:
             19: self._f_delete, 20: self._f_read_seq, 21: self._f_write_seq,
             22: self._f_make, 23: self._f_rename, 24: self._f_login_vector,
             25: lambda de: self.drive, 26: self._f_set_dma,
-            27: lambda de: 0, 28: lambda de: 0, 29: lambda de: 0,
-            30: lambda de: 0, 31: lambda de: DPB_ADDR, 32: self._f_user,
+            27: self._f_alloc_vector, 28: lambda de: 0, 29: lambda de: 0,
+            30: lambda de: 0, 31: self._f_get_dpb, 32: self._f_user,
             33: self._f_read_rand, 34: self._f_write_rand,
             35: self._f_file_size, 36: self._f_set_rand,
             37: lambda de: 0, 40: self._f_write_rand,
@@ -543,8 +545,7 @@ class CPM:
             impl = BIOS_IMPL + i
             self._put(BIOS_BASE + 3 * i, bytes([0xC3, impl & 0xFF, impl >> 8]))
             mem[impl] = 0xC9                            # trapped, then RET
-        # Disk parameter block (8" SSSD-like) returned by BDOS 31
-        self._put(DPB_ADDR, bytes([26, 0, 3, 7, 0, 242, 0, 63, 0, 0xC0, 0, 16, 0, 2, 0]))
+        self._refresh_disk_params()
 
     @staticmethod
     def _parse_fcb(spec):
@@ -771,6 +772,55 @@ class CPM:
             return 0
         return 0xFF
 
+    # -- disk size reported to programs (STAT, PIP, ...) -------------------------
+    # Host folders have no real limit, so the emulated disk is made big enough: 4K
+    # blocks (8 MB) normally, 8K/16K blocks (16/32 MB) when the folder holds more than
+    # half of that.  1024 directory entries.  The allocation vector is built from the
+    # real file sizes (all user areas share a disk); beyond 32 MB it simply reads full.
+    _DISK_SIZES = ((4096, 5, 31, 1, 0xFF), (8192, 6, 63, 3, 0xF0), (16384, 7, 127, 7, 0xC0))
+
+    def _drive_files(self, letter):
+        """Sizes of all files on drive `letter` (every user area)."""
+        base = self.drives.get(letter)
+        if base is None:
+            return []
+        dirs = [os.path.join(base, str(u)) for u in range(16)] if self._users.get(letter) else [base]
+        sizes = []
+        for d in dirs:
+            try:
+                for e in os.scandir(d):
+                    if e.is_file() and self._to_83(e.name):
+                        sizes.append(e.stat().st_size)
+            except OSError:
+                pass
+        return sizes
+
+    def _refresh_disk_params(self):
+        letter = chr(65 + self.drive)
+        sizes = self._drive_files(letter) if letter in self.drives else []
+        for bls, bsh, blm, exm, al0 in self._DISK_SIZES:
+            used = sum(-(-n // bls) for n in sizes)
+            if used * 2 <= 2048 or bls == 16384:
+                break
+        dsm = 2047
+        self._bls, self._exm = bls, exm
+        dpb = bytes([0, 1]) + bytes([bsh, blm, exm, dsm & 255, dsm >> 8, 0xFF, 3, al0, 0, 0, 0, 0, 0])
+        self._put(DPB_ADDR, dpb)
+        dirblocks = 32768 // bls
+        total = min(2048, dirblocks + used)
+        alv = bytearray(256)
+        for b in range(total):
+            alv[b >> 3] |= 0x80 >> (b & 7)
+        self._put(ALV_ADDR, bytes(alv))
+
+    def _f_get_dpb(self, de):
+        self._refresh_disk_params()
+        return DPB_ADDR
+
+    def _f_alloc_vector(self, de):
+        self._refresh_disk_params()
+        return ALV_ADDR
+
     def _f_login_vector(self, de):
         v = 0
         for letter in self.drives:
@@ -939,12 +989,31 @@ class CPM:
 
     def _f_search_first(self, de):
         self._search = self._dir_entries(de, False)
+        if self.cpu.mem[(de + 12) & 0xFFFF] == 0x3F:
+            self._refresh_disk_params()
+            self._search = self._group_extents(self._search)
         return self._f_search_next(de)
+
+    def _group_extents(self, entries):
+        """Directory entries as the DPB describes them: one entry covers EXM+1
+        logical (16K) extents.  Each carries its last logical extent number, that
+        extent's record count and the number of 16-bit block pointers it holds."""
+        span = self._exm + 1
+        groups = {}
+        for fn, ex, rc, path in entries:
+            g = groups.setdefault((path, ex // span), [fn, ex, rc, path])
+            g[1], g[2] = ex, rc
+        out = []
+        for (path, k), g in groups.items():
+            fn, ex, rc = g[0], g[1], g[2]
+            nbytes = (ex - k * span) * 16384 + rc * 128
+            out.append((fn, ex, rc, path, max(1, -(-nbytes // self._bls)) if nbytes else 0))
+        return out
 
     def _f_search_next(self, de):
         if not self._search:
             return 0xFF
-        fn, ex, rc, _ = self._search.pop(0)
+        fn, ex, rc, _, *nblk = self._search.pop(0)
         buf = bytearray([0xE5] * 128)
         e = bytearray(32)
         e[0] = self.user
@@ -952,8 +1021,13 @@ class CPM:
         e[12] = ex & 0x1F
         e[14] = ex >> 5
         e[15] = rc
-        for i in range((rc + 7) // 8):
-            e[16 + i] = (ex * 16 + i + 1) & 0xFF
+        if nblk:                                    # 16-bit block numbers
+            for i in range(min(8, nblk[0])):
+                b = (ex * 8 + i + 1) & 0xFFFF
+                e[16 + 2 * i], e[17 + 2 * i] = b & 255, b >> 8
+        else:
+            for i in range((rc + 7) // 8):
+                e[16 + i] = (ex * 16 + i + 1) & 0xFF
         buf[0:32] = e
         self._put(self.dma, buf)
         return 0
@@ -1053,6 +1127,8 @@ class CPM:
         self._put(addr, self._parse_fcb(spec) + bytes(24))
 
     def _ccp_dir(self, spec):
+        if spec and spec.endswith(":"):          # "DIR B:" lists everything on B:
+            spec += "*.*"
         self._make_fcb(0x5C, spec or "*.*")
         d = self.cpu.mem[0x5C]
         letter = chr(65 + (self.drive if d == 0 else d - 1))

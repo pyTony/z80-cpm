@@ -4,3 +4,5 @@ __pycache__/
 disks/
 disk/
 mydiskA/
+*.zip
+*.patch

@@ -260,6 +260,51 @@ class CpmTests(unittest.TestCase):
     def tearDown(self):
         self._td.cleanup()
 
+    def test_disk_size_and_allocation_vector(self):
+        os.makedirs(os.path.join(self.tmp, "A", "0"))
+        os.makedirs(os.path.join(self.tmp, "A", "2"))
+        with open(os.path.join(self.tmp, "A", "0", "ONE.DAT"), "wb") as f:
+            f.write(b"x" * 10000)                       # 3 blocks of 4K
+        with open(os.path.join(self.tmp, "A", "2", "TWO.DAT"), "wb") as f:
+            f.write(b"y" * 100)                         # 1 block (other user area, same disk)
+        cpm, out = make_cpm(self.tmp, drives={"A": os.path.join(self.tmp, "A")})
+        m = cpm.cpu.mem
+        dpb = cpm.bdos_call(31)
+        self.assertEqual(dpb, 0xFD80)
+        dsm = m[dpb + 5] | m[dpb + 6] << 8
+        self.assertEqual(dsm, 2047)
+        alv = cpm.bdos_call(27)
+        used = sum(bin(m[alv + i]).count("1") for i in range(256))
+        self.assertEqual(used, 8 + 4)                   # 8 directory blocks + 4 file blocks
+        # a folder with more than half the disk switches to bigger blocks and never overflows
+        with open(os.path.join(self.tmp, "A", "0", "BIG.DAT"), "wb") as f:
+            f.truncate(40 * 1024 * 1024)
+        dpb = cpm.bdos_call(31)
+        self.assertEqual(m[dpb + 2], 7)                 # BSH for 16K blocks
+        alv = cpm.bdos_call(27)
+        self.assertEqual(sum(bin(m[alv + i]).count("1") for i in range(256)), 2048)
+
+    def test_disk_size_and_allocation_vector(self):
+        os.makedirs(os.path.join(self.tmp, "A", "0"))
+        os.makedirs(os.path.join(self.tmp, "A", "2"))
+        with open(os.path.join(self.tmp, "A", "0", "ONE.DAT"), "wb") as f:
+            f.write(b"x" * 10000)                       # 3 blocks of 4K
+        with open(os.path.join(self.tmp, "A", "2", "TWO.DAT"), "wb") as f:
+            f.write(b"y" * 100)                         # 1 block (other user area, same disk)
+        cpm, out = make_cpm(self.tmp, drives={"A": os.path.join(self.tmp, "A")})
+        m = cpm.cpu.mem
+        dpb = cpm.bdos_call(31)
+        self.assertEqual(m[dpb + 5] | m[dpb + 6] << 8, 2047)
+        alv = cpm.bdos_call(27)
+        self.assertEqual(sum(bin(m[alv + i]).count("1") for i in range(256)), 8 + 4)
+        # more than half the disk: bigger blocks, and a full disk never overflows
+        with open(os.path.join(self.tmp, "A", "0", "BIG.DAT"), "wb") as f:
+            f.truncate(40 * 1024 * 1024)
+        dpb = cpm.bdos_call(31)
+        self.assertEqual(m[dpb + 2], 7)                 # BSH of 16K blocks
+        alv = cpm.bdos_call(27)
+        self.assertEqual(sum(bin(m[alv + i]).count("1") for i in range(256)), 2048)
+
     def test_copy_command(self):
         for d in ("A", "B"):
             os.makedirs(os.path.join(self.tmp, d, "0"))
