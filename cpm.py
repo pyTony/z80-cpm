@@ -1053,9 +1053,13 @@ class CPM:
             return
         with open(path, "rb") as f:
             program = f.read()
-        self.load(program, args)
+        drive = self.drive          # BDOS "select disk" (e.g. STAT probing every drive)
+        self.load(program, args)    # must not change the prompt drive, as on real CP/M
         self._print("\n")
-        self.run_timed()
+        try:
+            self.run_timed()
+        finally:
+            self._set_drive(drive)
 
     _HELP = {
         "DIR": ("DIR [spec]", "List files. Wildcards: ? matches one character, * the rest of\n"
