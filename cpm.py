@@ -938,6 +938,25 @@ class CPM:
         self._make_fcb(0x5C, cmd)
         path = self._fcb_path(0x5C)
         if path is None:
+            # Like CP/M Plus and ZCPR: a command that is not in the current user
+            # area is looked for in user 0 of the same drive, then in user 0 of A:.
+            # Only the command search does this; programs' own file opens do not.
+            user, drive_byte = self.user, self.cpu.mem[0x5C]
+            tries = []
+            if user != 0:
+                tries.append((0, drive_byte))
+            if drive_byte == 0 and self.drive != 0:
+                tries.append((0, 1))
+            try:
+                for u, d in tries:
+                    self.user = u
+                    self.cpu.mem[0x5C] = d
+                    path = self._fcb_path(0x5C)
+                    if path is not None:
+                        break
+            finally:
+                self.user = user
+        if path is None:
             self._print("\n%s?" % cmd.rsplit(".", 1)[0])
             return
         with open(path, "rb") as f:
@@ -961,7 +980,9 @@ class CPM:
         "EXIT": ("EXIT  (also BYE, QUIT)", "Leave the emulator."),
         "RUN": ("NAME [args]", "Any other word runs NAME.COM from the current drive/user,\n"
                 "passing the arguments on the command tail:   MBASIC   DUMP FILE.TXT\n"
-                "B:PROG runs PROG.COM from drive B. Try  DIR *.COM  to see what is there."),
+                "B:PROG runs PROG.COM from drive B. If NAME.COM is not in the current\n"
+                "user area it is also looked for in user 0, then on drive A: (user 0).\n"
+                "Try  DIR *.COM  to see what is there."),
         "KEYS": ("Keyboard", "Ctrl+]            stop the emulator immediately (unsaved work is lost)\n"
                  "Arrow keys, Home/End, PgUp/PgDn, Delete, Insert  ->  WordStar keys\n"
                  "                   (^E ^X ^S ^D, ^QS ^QD, ^R ^C, ^G, ^V)\n"

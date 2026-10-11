@@ -334,6 +334,24 @@ class CpmTests(unittest.TestCase):
         # letters substituted, but the "[" inside the ANSI sequence is untouched
         self.assertEqual(out.getvalue(), "x\u00e4\u00f6\u00e5\u00c4\x1b[2;3Hy")
 
+    def test_command_falls_back_to_user0_and_drive_a(self):
+        a, b = os.path.join(self.tmp, "A"), os.path.join(self.tmp, "B")
+        for d in (os.path.join(a, "0"), os.path.join(a, "3"),
+                  os.path.join(b, "0"), os.path.join(b, "3")):
+            os.makedirs(d)
+        for path in (os.path.join(a, "0", "sysprog.com"), os.path.join(b, "0", "bprog.com")):
+            with open(path, "wb") as f:
+                f.write(PROG_HELLO)
+        out = io.StringIO()
+        stdin = "USER 3\nSYSPROG\nB:\nSYSPROG\nBPROG\nA:BPROG\nEXIT\n"
+        cpm = CPM(console=Console(io.StringIO(stdin), out), drives={"A": a, "B": b})
+        cpm.shell()
+        text = out.getvalue()
+        # user 3 on A: -> A: user 0; user 3 on B: -> A: user 0 and B: user 0
+        self.assertEqual(text.count("Hello"), 3)
+        self.assertIn("BPROG?", text)            # explicit A: prefix does not search B:
+        self.assertEqual(cpm.user, 3)            # shell state untouched
+
     def test_shell_help(self):
         cpm, out = make_cpm(self.tmp, stdin="HELP\nHELP DIR\n?\nHELP KEYS\nHELP B:\nHELP NOPE\nEXIT\n")
         cpm.shell()
