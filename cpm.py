@@ -531,6 +531,7 @@ class CPM:
             33: self._f_read_rand, 34: self._f_write_rand,
             35: self._f_file_size, 36: self._f_set_rand,
             37: lambda de: 0, 40: self._f_write_rand,
+            45: lambda de: 0,                           # CP/M 3 set error mode: nothing to do
             # RunCPM extensions used by its INFO, LUA, FORMAT, CONSOLE7/8 programs
             230: self._f_console_mask, 249: self._f_make_disk,
             250: lambda de: 0 if sys.platform.startswith("win") else 2,   # host OS
