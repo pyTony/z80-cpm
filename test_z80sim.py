@@ -111,9 +111,9 @@ PROG_HELLO = bytes([0x11, 0x0B, 0x01, 0x0E, 0x09, 0xCD, 0x05, 0x00,
                     0xC3, 0x00, 0x00]) + b"Hello$"
 
 
-def make_cpm(tmp, stdin=""):
+def make_cpm(tmp, stdin="", drives=None):
     out = io.StringIO()
-    return CPM(console=Console(io.StringIO(stdin), out), drives={"A": tmp}), out
+    return CPM(console=Console(io.StringIO(stdin), out), drives=drives or {"A": tmp}), out
 
 
 class _SlowZ80(Z80):
@@ -227,6 +227,29 @@ class CpmTests(unittest.TestCase):
 
     def tearDown(self):
         self._td.cleanup()
+
+    def test_copy_command(self):
+        for d in ("A", "B"):
+            os.makedirs(os.path.join(self.tmp, d, "0"))
+        for n, data in (("A.TXT", b"one"), ("B.TXT", b"two"), ("P.COM", b"\x00")):
+            with open(os.path.join(self.tmp, "A", "0", n), "wb") as f:
+                f.write(data)
+        cpm, out = make_cpm(self.tmp, drives={"A": os.path.join(self.tmp, "A"),
+                                              "B": os.path.join(self.tmp, "B")})
+        for line in ("COPY A.TXT B:", "COPY *.TXT B3:", "COPY A.TXT C.TXT", "COPY *.TXT *.BAK",
+                     "COPY *.TXT X.TXT", "COPY A.TXT A.TXT", "COPY A.TXT Q:", "COPY NONE.TXT B:"):
+            cpm._ccp_command(line)
+        def rd(*p):
+            with open(os.path.join(self.tmp, *p), "rb") as f:
+                return f.read()
+        self.assertEqual(rd("B", "0", "a.txt"), b"one")
+        self.assertEqual(rd("B", "3", "b.txt"), b"two")
+        self.assertEqual(rd("A", "0", "c.txt"), b"one")
+        self.assertEqual(rd("A", "0", "b.bak"), b"two")
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "A", "0", "x.txt")))
+        text = out.getvalue()
+        for word in ("SAME FILE", "NO DRIVE", "NO FILE", "SEVERAL FILES"):
+            self.assertIn(word, text)
 
     def test_hello(self):
         cpm, out = make_cpm(self.tmp)

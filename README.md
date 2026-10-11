@@ -37,6 +37,8 @@ letters (`B:`), it has some ZCPR-style extras (see `HELP name`):
 * `ALIAS name=text`, `UNALIAS name` - short names for command lines.
 * `cmd1 ; cmd2` - several commands on one line; lines starting with `#` are comments.
 * Startup file - `--startup FILE`, or `STARTUP.CPM` on A:0, run when the prompt starts.
+* `COPY src [dst]` - copy files; wildcards, a destination drive and user area (`B3:`), or a
+  name/pattern (`COPY *.TXT *.BAK`). Existing files are replaced.
 * `VIEW file` - pager for files of any size (memory-mapped, so no 64K limit): Space/b or
   PgDn/PgUp, Enter/arrows, Home/End or g/G, `/text` search with n/N, q or Esc to quit.
 * `TIME [ON|OFF]` - after each program, real time, instructions, T-states and the time

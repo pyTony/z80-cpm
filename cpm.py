@@ -31,6 +31,7 @@ Usage
 import codecs
 import os
 import re
+import shutil
 import sys
 
 from z80sim import Z80
@@ -1062,6 +1063,68 @@ class CPM:
         finally:
             self._set_drive(drive)
 
+    _SPEC_RE = re.compile(r"^(?:([A-Za-z])(\d{1,2})?:)?(.*)$")
+
+    def _spec_dir(self, letter, user):
+        """Host folder of drive `letter` (None = current) in user area `user` (None = current)."""
+        letter = (letter or chr(65 + self.drive)).upper()
+        base = self.drives.get(letter)
+        if base is None or (user is not None and user > 15):
+            return None, letter
+        if self._users.get(letter):
+            return os.path.join(base, str(self.user if user is None else user)), letter
+        return base, letter
+
+    def _ccp_copy(self, src, dst):
+        """COPY src [dst]: src may have wildcards; dst is a drive (B:), a drive and user
+        (B3:), a name or a name pattern (*.BAK).  Existing files are replaced."""
+        sm, dm = self._SPEC_RE.match(src), self._SPEC_RE.match(dst or "")
+        sdir, sl = self._spec_dir(sm.group(1), int(sm.group(2)) if sm.group(2) else None)
+        ddir, dl = self._spec_dir(dm.group(1), int(dm.group(2)) if dm.group(2) else None)
+        if sdir is None or ddir is None:
+            self._print("\n" + self._c("red", "NO DRIVE OR USER AREA %s:" % (sl if sdir is None else dl)))
+            return
+        pat = self._parse_fcb(sm.group(3))[1:]
+        dpat = self._parse_fcb(dm.group(3))[1:] if dm.group(3) else None
+        if dpat is not None and not dpat[:8].strip():
+            self._print("\n" + self._c("red", "BAD DESTINATION"))
+            return
+        files = []
+        try:
+            for entry in sorted(os.listdir(sdir), key=str.upper):
+                fn = self._to_83(entry)
+                if (fn and os.path.isfile(os.path.join(sdir, entry)) and
+                        all(p == 0x3F or p == c for p, c in zip(pat, fn))):
+                    files.append((entry, fn))
+        except OSError:
+            pass
+        if not files:
+            self._print("\n" + self._c("red", "NO FILE"))
+            return
+        if dpat is not None and len(files) > 1 and 0x3F not in dpat:
+            self._print("\n" + self._c("red", "SEVERAL FILES: GIVE A DRIVE OR A PATTERN AS DESTINATION"))
+            return
+        os.makedirs(ddir, exist_ok=True)
+        done = 0
+        for entry, fn in files:
+            out = fn if dpat is None else bytes(c if p == 0x3F else p for p, c in zip(dpat, fn))
+            name = out[:8].decode("latin1").rstrip().lower()
+            ext = out[8:].decode("latin1").rstrip().lower()
+            host = name + ("." + ext if ext else "")
+            target = os.path.join(ddir, host)
+            for existing in os.listdir(ddir):          # reuse the name's spelling if present
+                if existing.lower() == host:
+                    target = os.path.join(ddir, existing)
+            source = os.path.join(sdir, entry)
+            if os.path.abspath(source) == os.path.abspath(target):
+                self._print("\n%s: SAME FILE" % host.upper())
+                continue
+            shutil.copyfile(source, target)
+            self._print("\n%s -> %s%s:%s" % (entry.upper(), dl, "" if not self._users.get(dl)
+                        else (dm.group(2) if dm.group(2) else str(self.user)), host.upper()))
+            done += 1
+        self._print("\n%d file%s copied" % (done, "" if done == 1 else "s"))
+
     # ------------------------------------------------------------------ VIEW
     def _ccp_view(self, path, name):
         """Pager for files of any size: the file is memory-mapped and only an array of
@@ -1202,6 +1265,10 @@ class CPM:
                 "the name or type.   DIR   DIR *.COM   DIR B:*.TXT   DIR A*.*"),
         "ERA": ("ERA spec", "Delete files.   ERA OLD.TXT   ERA *.BAK"),
         "REN": ("REN new=old", "Rename a file.   REN NEW.TXT=OLD.TXT"),
+        "COPY": ("COPY source [destination]", "Copy files.   COPY A.TXT B:   COPY *.COM B3:   COPY A.TXT B.TXT   COPY *.TXT *.BAK\n"
+                 "The destination is a drive (B:), a drive and user area (B3:), a name or a pattern;\n"
+                 "with no destination the files go to the current drive and user area (same name =\n"
+                 "SAME FILE).  Existing files are replaced.  Several sources need a drive or a pattern."),
         "VIEW": ("VIEW file", "Page through a file of any size.  Space/b or PgDn/PgUp: page;\n"
                  "Enter or Down/Up (j/k): line;  Left/Right: sideways;  g/G or Home/End: start/end;\n"
                  "/text: search (case ignored), n/N: next/previous;  q or Esc: quit."),
@@ -1254,7 +1321,7 @@ class CPM:
             "\n  USER n          switch user area      B:             switch drive"
             "\n  PATH [list]     command search path   ALIAS n=text   short names"
             "\n  TIME [ON|OFF]   show run timing       cmd ; cmd      several commands"
-            "\n  VIEW file       page through a file of any size (HELP VIEW)"
+            "\n  COPY src [dst]  copy files (HELP COPY)  VIEW file    page through a file of any size"
             "\n  HELP [command]  this help (or ?)      EXIT           leave (BYE, QUIT)"
             "\n"
             "\nAnything else runs NAME.COM:  MBASIC   DUMP FILE.TXT   B:PROG"
@@ -1348,6 +1415,8 @@ class CPM:
                       self._parse_fcb(new) + bytes(8))
             if self._f_rename(0x5C) != 0:
                 self._print("\n" + self._c("red", "NO FILE"))
+        elif cmd in ("COPY", "CP") and args:
+            self._ccp_copy(args[0], args[1] if len(args) > 1 else "")
         elif cmd == "VIEW" and args:
             self._make_fcb(0x5C, args[0])
             path = self._fcb_path(0x5C)
