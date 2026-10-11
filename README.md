@@ -35,6 +35,8 @@ letters (`B:`), it has some ZCPR-style extras (see `HELP name`):
   Elements are drive+user (`A0:`, `B3:`, `$0:` = user 0 of the current drive). Default
   `$0: A0:`. A typed drive (`B:PROG`) searches only that drive.
 * `ALIAS name=text`, `UNALIAS name` - short names for command lines.
+* Line editing - Left/Right, Home/End, Delete, Backspace, `^U` (clear), Up/Down (earlier
+  commands) work in the prompt, so a pasted line can be corrected before Enter.
 * `cmd1 ; cmd2` - several commands on one line; lines starting with `#` are comments.
 * Startup file - `--startup FILE`, or `STARTUP.CPM` on A:0, run when the prompt starts.
 * `COPY src [dst]` - copy files; wildcards, a destination drive and user area (`B3:`), or a

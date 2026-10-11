@@ -104,6 +104,7 @@ class Console:
         self.stdout = sys.stdout if stdout is None else stdout
         self.charset = charset
         self._buf = []
+        self.history = []
         self._eof_reads = 0
         self.mask = 0x7F               # 7-bit output; 0xFF after RunCPM's CONSOLE8
         self._last_poll = 0.0
@@ -372,35 +373,98 @@ class Console:
     @_count_idle
     def read_line(self):
         """One edited line as bytes without the terminator; None at EOF.
-        On a real terminal the line is echoed and Backspace/^U/^X edit it."""
-        out = []
+        On a real terminal the line is echoed and can be edited: Left/Right (^S/^D),
+        Home/End, Delete (^G), Backspace, ^U clears, Up/Down (^E/^X) recall earlier lines."""
+        out, pos = [], 0
+        hist = self.history
+        hi = len(hist)                       # index into history; len = the new line
+        fresh = []
+
+        def put(bs):
+            for c in bs:
+                self.write(c)
+
+        def redraw(frm, old_len, new_pos):
+            """Rewrite out[frm:], blank leftovers, put the cursor at new_pos."""
+            put(out[frm:])
+            extra = max(0, old_len - len(out))
+            put([32] * extra)
+            put([8] * (len(out) + extra - new_pos))
+
+        def replace(text):
+            nonlocal pos
+            put([8] * pos)
+            old = len(out)
+            out[:] = list(text)
+            put(out)
+            gap = max(0, old - len(out))
+            put([32] * gap)
+            put([8] * gap)
+            pos = len(out)
+
         while True:
             ch = self.read_char()
             if ch is None:
                 return bytes(out) if out else None
-            if self._raw:
+            if not self._raw:
                 if ch == 0x0D:
-                    self.write(0x0D)
-                    self.write(0x0A)
                     return bytes(out)
-                if ch in (0x08, 0x7F):
-                    if out:
-                        out.pop()
-                        for c in (8, 32, 8):
-                            self.write(c)
-                elif ch in (0x15, 0x18):
-                    while out:
-                        out.pop()
-                        for c in (8, 32, 8):
-                            self.write(c)
-                elif ch >= 0x20:
-                    out.append(ch)
-                    self.write(ch)
-                self.flush()
+                out.append(ch)
                 continue
             if ch == 0x0D:
+                self.write(0x0D)
+                self.write(0x0A)
+                if out and (not hist or hist[-1] != bytes(out)):
+                    hist.append(bytes(out))
                 return bytes(out)
-            out.append(ch)
+            if ch in (0x08, 0x7F):                      # Backspace
+                if pos:
+                    old = len(out)
+                    pos -= 1
+                    del out[pos]
+                    put([8])
+                    redraw(pos, old, pos)
+            elif ch == 0x07:                            # Delete
+                if pos < len(out):
+                    old = len(out)
+                    del out[pos]
+                    redraw(pos, old, pos)
+            elif ch == 0x13:                            # left
+                if pos:
+                    pos -= 1
+                    put([8])
+            elif ch == 0x04:                            # right
+                if pos < len(out):
+                    self.write(out[pos])
+                    pos += 1
+            elif ch == 0x11:                            # ^Q prefix: ^QS home, ^QD end
+                k = self.read_char()
+                if k in (0x13, 0x53, 0x73):
+                    put([8] * pos)
+                    pos = 0
+                elif k in (0x04, 0x44, 0x64):
+                    put(out[pos:])
+                    pos = len(out)
+            elif ch == 0x15:                            # ^U: clear the line
+                replace(b"")
+            elif ch == 0x05:                            # up: older line
+                if hi > 0:
+                    if hi == len(hist):
+                        fresh = list(out)
+                    hi -= 1
+                    replace(hist[hi])
+            elif ch == 0x18:                            # down: newer line
+                if hi < len(hist):
+                    hi += 1
+                    replace(hist[hi] if hi < len(hist) else bytes(fresh))
+            elif ch >= 0x20:
+                old = len(out)
+                out.insert(pos, ch)
+                self.write(ch)
+                pos += 1
+                if pos < len(out):
+                    redraw(pos, old + 1, pos)
+            self.flush()
 
 
 class CPM:
