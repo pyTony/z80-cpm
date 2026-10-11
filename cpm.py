@@ -1138,13 +1138,24 @@ class CPM:
                 names.append(fn)
         if not names:
             self._print("\n" + self._c("red", "NO FILE"))
-            return
         for i in range(0, len(names), 4):
             row = " : ".join(
                 self._c("green" if f[8:].decode() == "COM" else "bold",
                         "%s %s" % (f[:8].decode(), f[8:].decode()))
                 for f in names[i:i + 4])
             self._print("\n%s %s" % (self._c("cyan", letter + ":"), row))
+        if (spec or "").upper().split(":")[-1] in ("", "*.*"):
+            # host files whose names do not fit 8.3 are invisible to CP/M: say so
+            dirpath = self._drive_dir(0x5C)
+            try:
+                bad = sorted(e for e in os.listdir(dirpath or ".")
+                             if dirpath and os.path.isfile(os.path.join(dirpath, e))
+                             and self._to_83(e) is None)
+            except OSError:
+                bad = []
+            if bad:
+                self._print("\n" + self._c("dim", "Not shown (name is not 8.3 or has no name): " +
+                                             ", ".join(bad[:8]) + (" ..." if len(bad) > 8 else "")))
 
     def run_timed(self):
         """run(), then report host time, instruction count and the time a real
