@@ -27,3 +27,5 @@ At the prompt type `HELP`. `Ctrl+]` stops the emulator immediately.
 CP/M software is not included; bring your own disks.
 
 Speed: roughly 5-7x a real 4 MHz Z80 on MBASIC (CPython 3.13/3.14, desktop CPU).
+
+- Lua (RunCPM BDOS 254) needs the optional `lupa` package: `pip install lupa`.

@@ -104,6 +104,7 @@ class Console:
         self.charset = charset
         self._buf = []
         self._eof_reads = 0
+        self.mask = 0x7F               # 7-bit output; 0xFF after RunCPM's CONSOLE8
         self._last_poll = 0.0
         self.idle = 0.0                # seconds spent waiting for input
         self._eof = False
@@ -198,7 +199,7 @@ class Console:
 
     # -- output ---------------------------------------------------------------
     def write(self, b):
-        b &= 0x7F
+        b &= self.mask
         ch = chr(b)
         if self._esc == 0:
             if b == 0x1B:
@@ -443,6 +444,13 @@ class CPM:
             33: self._f_read_rand, 34: self._f_write_rand,
             35: self._f_file_size, 36: self._f_set_rand,
             37: lambda de: 0, 40: self._f_write_rand,
+            # RunCPM extensions used by its INFO, LUA, FORMAT, CONSOLE7/8 programs
+            230: self._f_console_mask, 249: self._f_make_disk,
+            250: lambda de: 0 if sys.platform.startswith("win") else 2,   # host OS
+            251: lambda de: 0x64,                                           # "version" 6.4
+            252: lambda de: 0x10,                                           # internal CCP 1.0
+            253: lambda de: 0xF500,                                         # CCP address
+            254: self._f_lua,
         }
         self._init_memory()
 
@@ -568,6 +576,74 @@ class CPM:
             cpu.r[4] = cpu.r[0] = (res >> 8) & 0xFF
         if not self.exited:
             cpu.pc = cpu._pop()
+
+    # -- RunCPM extensions ----------------------------------------------------------
+    def _f_console_mask(self, de):
+        self.console.mask = de & 0xFF            # 7Fh = 7-bit console, FFh = 8-bit
+
+    def _f_make_disk(self, de):
+        """BDOS 249: create the folder of the drive named in the FCB (FORMAT.COM)."""
+        d = self.cpu.mem[de & 0xFFFF]
+        if not 1 <= d <= 16:
+            return 0xFF
+        letter = chr(64 + d)
+        if letter in self.drives:
+            return 0
+        try:
+            first = next(iter(self.drives.values()))
+            parent = os.path.dirname(first.rstrip("/\\")) if self._users.get(next(iter(self.drives))) \
+                else os.path.dirname(first.rstrip("/\\"))
+            path = os.path.join(parent, letter)
+            users = bool(self._users.get(next(iter(self.drives))))
+            os.makedirs(os.path.join(path, "0") if users else path, exist_ok=True)
+        except OSError:
+            return 0xFF
+        self.drives[letter] = path
+        self._users[letter] = users
+        return 0
+
+    def _f_lua(self, de):
+        """BDOS 254: run the Lua script named in the FCB (LUA.COM does this)."""
+        try:
+            from lupa import LuaRuntime, LuaError
+        except ImportError:
+            self._print("\nLua needs the lupa package:  pip install lupa")
+            return 0xFF
+        mem = self.cpu.mem
+        mem[(de + 9) & 0xFFFF], mem[(de + 10) & 0xFFFF], mem[(de + 11) & 0xFFFF] = 0x4C, 0x55, 0x41
+        path = self._fcb_path(de)
+        if path is None:
+            self._print("\n" + self._c("red", "Lua script not found"))
+            return 0xFF
+        lua = LuaRuntime(unpack_returned_tuples=True)
+
+        def out(text):
+            self._print(text if text.endswith("\n") or True else text)
+
+        def bdos_call(fn, arg=0):
+            saved = (self.cpu.r[1], self.cpu.de)
+            try:
+                res = self.bdos_call(int(fn), int(arg))
+            finally:
+                self.cpu.r[1] = saved[0]
+                self.cpu.de = saved[1]
+            return int(res or 0) & 0xFFFF
+
+        env = lua.eval("function(out, bdos, rd, wr) "
+                       "BdosCall = bdos; RamRead = rd; RamWrite = wr; "
+                       "print = function(...) local t = {} "
+                       "for i = 1, select('#', ...) do t[#t + 1] = tostring((select(i, ...))) end "
+                       "out(table.concat(t, '\\t') .. '\\n') end end")
+        env(out, bdos_call, lambda a: mem[int(a) & 0xFFFF],
+            lambda a, v: mem.__setitem__(int(a) & 0xFFFF, int(v) & 0xFF))
+        try:
+            with open(path, "rb") as f:
+                lua.execute(f.read().decode("latin1"))
+        except LuaError as e:
+            self._print("\n" + self._c("red", str(e)) + "\n")
+            return 0xFF
+        self.console.flush()
+        return 0
 
     # -- console ----------------------------------------------------------------
     def _f_exit(self, de):
@@ -1199,7 +1275,10 @@ class CPM:
     def bios(self, idx):
         cpu = self.cpu
         name = BIOS_ENTRIES[idx]
-        if name in ("BOOT", "WBOOT"):
+        if name == "BOOT":                  # cold start: EXIT.COM jumps here to leave
+            self.console.flush()
+            raise SystemExit(0)
+        if name == "WBOOT":
             self.exited = True
             return
         if name == "CONST":
