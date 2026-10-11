@@ -352,6 +352,32 @@ class CpmTests(unittest.TestCase):
         self.assertIn("BPROG?", text)            # explicit A: prefix does not search B:
         self.assertEqual(cpm.user, 3)            # shell state untouched
 
+    def test_path_alias_semicolon_startup_color(self):
+        a, b = os.path.join(self.tmp, "A"), os.path.join(self.tmp, "B")
+        for d in (os.path.join(a, "0"), os.path.join(b, "0"), os.path.join(b, "5")):
+            os.makedirs(d)
+        with open(os.path.join(b, "5", "tool.com"), "wb") as f:
+            f.write(PROG_HELLO)
+        startup = os.path.join(self.tmp, "start.txt")
+        with open(startup, "w") as f:
+            f.write("# comment\nALIAS HI=TOOL ; TOOL\nPATH B5:\n")
+        out = io.StringIO()
+        cpm = CPM(console=Console(io.StringIO("TOOL\nPATH\nHI\nPATH NONE\nTOOL\nPATH Z9\nDIR\nEXIT\n"), out),
+                  drives={"A": a, "B": b})
+        cpm.startup = startup
+        cpm.shell()
+        text = out.getvalue()
+        self.assertEqual(text.count("Hello"), 3)            # TOOL via PATH, then HI runs it twice
+        self.assertIn("Path: B5:", text)
+        self.assertIn("TOOL?", text)                        # after PATH NONE
+        self.assertIn("Bad path element Z9", text)
+        self.assertNotIn("\x1b", text)                      # colour is off by default
+        out2 = io.StringIO()
+        cpm2 = CPM(console=Console(io.StringIO("DIR\nEXIT\n"), out2), drives={"A": a, "B": b})
+        cpm2.color = True
+        cpm2.shell()
+        self.assertIn("\x1b[32mA0\x1b[0m>", out2.getvalue())
+
     def test_shell_help(self):
         cpm, out = make_cpm(self.tmp, stdin="HELP\nHELP DIR\n?\nHELP KEYS\nHELP B:\nHELP NOPE\nEXIT\n")
         cpm.shell()

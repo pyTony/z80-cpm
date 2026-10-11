@@ -30,6 +30,7 @@ Usage
 """
 import codecs
 import os
+import re
 import sys
 
 from z80sim import Z80
@@ -416,6 +417,11 @@ class CPM:
         self.user = 0
         self.exited = False
         self.timing = False
+        self.color = False                  # ANSI colour in the built-in prompt/DIR/HELP
+        self.path = ["$0:", "A0:"]         # command search path (see HELP PATH)
+        self.aliases = {}
+        self._expanding = set()
+        self.startup = None                 # host file with start-up commands
         self._steps_last = 0
         self._search = []
         self._warned = set()
@@ -888,6 +894,15 @@ class CPM:
             self.console.write(ord(ch))
         self.console.flush()
 
+    _COLORS = {"red": "31", "green": "32", "yellow": "33", "blue": "34", "cyan": "36",
+               "bold": "1", "dim": "2"}
+
+    def _c(self, name, text):
+        """Wrap text in an ANSI colour when colour is on."""
+        if not self.color:
+            return text
+        return "\x1b[%sm%s\x1b[0m" % (self._COLORS[name], text)
+
     def _set_drive(self, drive):
         self.drive = drive
         self.cpu.mem[4] = ((self.user << 4) | self.drive) & 0xFF
@@ -904,11 +919,14 @@ class CPM:
             if fn not in names:
                 names.append(fn)
         if not names:
-            self._print("\nNO FILE")
+            self._print("\n" + self._c("red", "NO FILE"))
             return
         for i in range(0, len(names), 4):
-            row = " : ".join("%s %s" % (f[:8].decode(), f[8:].decode()) for f in names[i:i + 4])
-            self._print("\n%s: %s" % (letter, row))
+            row = " : ".join(
+                self._c("green" if f[8:].decode() == "COM" else "bold",
+                        "%s %s" % (f[:8].decode(), f[8:].decode()))
+                for f in names[i:i + 4])
+            self._print("\n%s %s" % (self._c("cyan", letter + ":"), row))
 
     def run_timed(self):
         """run(), then report host time, instruction count and the time a real
@@ -924,7 +942,7 @@ class CPM:
             dt = time.perf_counter() - t0 - wait
             ts = self.cpu.tstates - ts0
             real = ts / 4e6
-            self._print("\n[time] %.2f s here; %s instructions, %s T-states = %.3f s on a "
+            self._print("\n" + self._c("dim", "[time]") + " %.2f s here; %s instructions, %s T-states = %.3f s on a "
                         "4 MHz Z80 (%.2fx real-time speed)%s\n" %
                         (dt, format(self._steps_last, ","),
                          format(ts, ","), real, real / dt if dt else 0,
@@ -938,15 +956,13 @@ class CPM:
         self._make_fcb(0x5C, cmd)
         path = self._fcb_path(0x5C)
         if path is None:
-            # Like CP/M Plus and ZCPR: a command that is not in the current user
-            # area is looked for in user 0 of the same drive, then in user 0 of A:.
-            # Only the command search does this; programs' own file opens do not.
+            # Not in the current drive/user: try the PATH (a typed drive prefix such as
+            # B:PROG searches only that drive, current user then user 0).
             user, drive_byte = self.user, self.cpu.mem[0x5C]
-            tries = []
-            if user != 0:
-                tries.append((0, drive_byte))
-            if drive_byte == 0 and self.drive != 0:
-                tries.append((0, 1))
+            if drive_byte:
+                tries = [(0, drive_byte)] if user != 0 else []
+            else:
+                tries = self._path_dirs()
             try:
                 for u, d in tries:
                     self.user = u
@@ -957,7 +973,7 @@ class CPM:
             finally:
                 self.user = user
         if path is None:
-            self._print("\n%s?" % cmd.rsplit(".", 1)[0])
+            self._print("\n" + self._c("red", "%s?" % cmd.rsplit(".", 1)[0]))
             return
         with open(path, "rb") as f:
             program = f.read()
@@ -973,6 +989,15 @@ class CPM:
         "TYPE": ("TYPE file", "Show a text file on the screen.   TYPE READ.ME"),
         "TIME": ("TIME [ON|OFF]", "Show timing after every program run: real time here, instructions,\n"
                  "T-states and the time a 4 MHz Z80 would need. Also --time on the command line."),
+        "PATH": ("PATH [list|NONE]", "Where commands are searched after the current drive and user.\n"
+                 "Elements are DRIVE USER :  A0:  B3:  B:  $0:  ($ = current drive or user).\n"
+                 "Default is  $0: A0:  (user 0 of this drive, then of A:).   PATH A0: B0: A15:\n"
+                 "A typed drive, as in B:PROG, searches only that drive."),
+        "ALIAS": ("ALIAS name=text   UNALIAS name", "Define a short name for a command line.   ALIAS L=DIR *.COM ; USER 0\n"
+                  "ALIAS alone lists them; ALIAS name= removes one. Several commands can share a\n"
+                  "line when separated by ;   Lines starting with # are comments."),
+        "STARTUP": ("Start-up commands", "Commands run when the prompt starts: the file given with --startup,\n"
+                    "else STARTUP.CPM on A: user 0. Put PATH and ALIAS lines there."),
         "USER": ("USER n", "Switch to user area n (0-15). Needs a disk laid out as\n"
                  "DRIVE/0, DRIVE/1 ... on the host. The prompt shows it: A0>, A3>"),
         "d:": ("A: B: ... P:", "Switch the current drive, e.g. B:"),
@@ -1008,68 +1033,167 @@ class CPM:
             "\n  DIR [spec]      list files            ERA spec       delete files"
             "\n  REN new=old     rename a file         TYPE file      show a text file"
             "\n  USER n          switch user area      B:             switch drive"
+            "\n  PATH [list]     command search path   ALIAS n=text   short names"
+            "\n  TIME [ON|OFF]   show run timing       cmd ; cmd      several commands"
             "\n  HELP [command]  this help (or ?)      EXIT           leave (BYE, QUIT)"
             "\n"
             "\nAnything else runs NAME.COM:  MBASIC   DUMP FILE.TXT   B:PROG"
             "\nHELP DIR, HELP RUN, HELP KEYS ... give details.  Ctrl+] stops the emulator.")
 
+    _PATH_RE = re.compile(r"([A-P$]?)(\d{1,2}|\$)?:?$")
+
+    def _path_dirs(self):
+        """PATH as (user, drive byte) pairs: drive byte 0 = current drive."""
+        out = []
+        for entry in self.path:
+            m = self._PATH_RE.match(entry)
+            if not m:
+                continue
+            letter, num = m.groups()
+            drive_byte = ord(letter) - 64 if letter and letter != "$" else 0
+            user = int(num) if num and num != "$" else self.user
+            if user < 16 and (user, drive_byte) not in out:
+                out.append((user, drive_byte))
+        return out
+
+    def _ccp_path(self, args):
+        if not args:
+            self._print("\nPath: " + (" ".join(self.path) or "(none)"))
+            return
+        if [a.upper() for a in args] == ["NONE"]:
+            self.path = []
+            return
+        entries = [e.upper() for a in args for e in a.replace(",", " ").split()]
+        bad = [e for e in entries
+               if not self._PATH_RE.match(e) or (e.rstrip(":")[1:].isdigit() and int(e.rstrip(":")[1:]) > 15)]
+        if bad:
+            self._print("\n" + self._c("red", "Bad path element %s" % bad[0]))
+            return
+        self.path = [e if e.endswith(":") else e + ":" for e in entries]
+
+    def _ccp_alias(self, args, text):
+        if not args:
+            for k, v in sorted(self.aliases.items()):
+                self._print("\n%s = %s" % (self._c("cyan", k), v))
+            if not self.aliases:
+                self._print("\nNo aliases. ALIAS name=command text defines one.")
+            return
+        name, eq, value = text.partition("=")
+        name = name.strip().upper()
+        if not eq or not name or " " in name:
+            self._print("\n" + self._c("red", "Usage: ALIAS name=command text"))
+        elif value.strip():
+            self.aliases[name] = value.strip()
+        else:
+            self.aliases.pop(name, None)
+
+    def _ccp_line(self, line):
+        """Run one input line (commands separated by ;). False means leave the shell."""
+        if line.strip().upper().startswith("ALIAS"):       # the text may itself contain ;
+            return self._ccp_command(line)
+        for part in line.split(";"):
+            if not self._ccp_command(part):
+                return False
+        return True
+
+    def _ccp_command(self, text):
+        words = text.strip().upper().split()
+        if not words or words[0].startswith("#"):
+            return True
+        if words[0] in self.aliases and words[0] not in self._expanding:
+            self._expanding.add(words[0])                  # an alias may use its own name
+            try:
+                return self._ccp_line(" ".join([self.aliases[words[0]]] + words[1:]))
+            finally:
+                self._expanding.discard(words[0])
+        cmd, args = words[0], words[1:]
+        if len(cmd) == 2 and cmd[1] == ":" and "A" <= cmd[0] <= "P":
+            if cmd[0] in self.drives:
+                self._set_drive(ord(cmd[0]) - 65)
+            else:
+                self._print("\n" + self._c("red", "BDOS Err On %s: Select" % cmd[0]))
+        elif cmd in ("EXIT", "BYE", "QUIT"):
+            return False
+        elif cmd in ("HELP", "?"):
+            self._ccp_help(args[0] if args else None)
+        elif cmd == "DIR":
+            self._ccp_dir(args[0] if args else None)
+        elif cmd == "ERA" and args:
+            self._make_fcb(0x5C, args[0])
+            if self._f_delete(0x5C) != 0:
+                self._print("\n" + self._c("red", "NO FILE"))
+        elif cmd == "REN" and args and "=" in args[0]:
+            new, _, old = args[0].partition("=")
+            self._put(0x5C, self._parse_fcb(old) + bytes(4) +
+                      self._parse_fcb(new) + bytes(8))
+            if self._f_rename(0x5C) != 0:
+                self._print("\n" + self._c("red", "NO FILE"))
+        elif cmd == "TYPE" and args:
+            self._make_fcb(0x5C, args[0])
+            path = self._fcb_path(0x5C)
+            if path is None:
+                self._print("\n" + self._c("red", "NO FILE"))
+            else:
+                self._print("\n")
+                with open(path, "rb") as f:
+                    for b in f.read():
+                        if b == CTRL_Z:
+                            break
+                        self.console.write(b)
+                self.console.flush()
+        elif cmd == "TIME":
+            if args and args[0].upper() in ("ON", "OFF"):
+                self.timing = args[0].upper() == "ON"
+            else:
+                self.timing = not self.timing
+            self._print("\nTiming %s" % ("ON" if self.timing else "OFF"))
+        elif cmd == "PATH":
+            self._ccp_path(args)
+        elif cmd == "ALIAS":
+            self._ccp_alias(args, text.strip()[5:])
+        elif cmd == "UNALIAS" and args:
+            self.aliases.pop(args[0], None)
+        elif cmd == "USER" and args and args[0].isdigit() and int(args[0]) < 16:
+            self.user = int(args[0])
+            self._set_drive(self.drive)
+        else:
+            self._ccp_run(cmd, args)
+        return True
+
+    def _run_startup(self):
+        """Commands from --startup FILE, else STARTUP.CPM on A:0 if there is one."""
+        lines = None
+        if self.startup:
+            with open(self.startup, "rb") as f:
+                lines = f.read().decode("latin1").splitlines()
+        elif "A" in self.drives:
+            drive, user = self.drive, self.user
+            self.user = 0
+            try:
+                self._make_fcb(0x5C, "A:STARTUP.CPM")
+                path = self._fcb_path(0x5C)
+            finally:
+                self.drive, self.user = drive, user
+            if path:
+                with open(path, "rb") as f:
+                    lines = f.read().decode("latin1").splitlines()
+        for line in lines or []:
+            if not self._ccp_line(line):
+                return False
+        return True
+
     def shell(self):
         """Interactive command prompt. Returns at EOF or on EXIT."""
-        self._print("\nCP/M 2.2 emulator - type HELP for commands")
+        self._print("\n" + self._c("bold", "CP/M 2.2 emulator") + " - type HELP for commands")
+        if not self._run_startup():
+            return
         while True:
-            self._print("\n%s%d>" % (chr(65 + self.drive), self.user))
+            self._print("\n%s>" % self._c("green", "%s%d" % (chr(65 + self.drive), self.user)))
             line = self.console.read_line()
             if line is None:
                 break
-            words = line.decode("latin1").strip().upper().split()
-            if not words:
-                continue
-            cmd, args = words[0], words[1:]
-            if len(cmd) == 2 and cmd[1] == ":" and "A" <= cmd[0] <= "P":
-                if cmd[0] in self.drives:
-                    self._set_drive(ord(cmd[0]) - 65)
-                else:
-                    self._print("\nBDOS Err On %s: Select" % cmd[0])
-            elif cmd in ("EXIT", "BYE", "QUIT"):
+            if not self._ccp_line(line.decode("latin1")):
                 break
-            elif cmd in ("HELP", "?"):
-                self._ccp_help(args[0] if args else None)
-            elif cmd == "DIR":
-                self._ccp_dir(args[0] if args else None)
-            elif cmd == "ERA" and args:
-                self._make_fcb(0x5C, args[0])
-                if self._f_delete(0x5C) != 0:
-                    self._print("\nNO FILE")
-            elif cmd == "REN" and args and "=" in args[0]:
-                new, _, old = args[0].partition("=")
-                self._put(0x5C, self._parse_fcb(old) + bytes(4) +
-                          self._parse_fcb(new) + bytes(8))
-                if self._f_rename(0x5C) != 0:
-                    self._print("\nNO FILE")
-            elif cmd == "TYPE" and args:
-                self._make_fcb(0x5C, args[0])
-                path = self._fcb_path(0x5C)
-                if path is None:
-                    self._print("\nNO FILE")
-                else:
-                    self._print("\n")
-                    with open(path, "rb") as f:
-                        for b in f.read():
-                            if b == CTRL_Z:
-                                break
-                            self.console.write(b)
-                    self.console.flush()
-            elif cmd == "TIME":
-                if args and args[0].upper() in ("ON", "OFF"):
-                    self.timing = args[0].upper() == "ON"
-                else:
-                    self.timing = not self.timing
-                self._print("\nTiming %s" % ("ON" if self.timing else "OFF"))
-            elif cmd == "USER" and args and args[0].isdigit() and int(args[0]) < 16:
-                self.user = int(args[0])
-                self._set_drive(self.drive)
-            else:
-                self._ccp_run(cmd, args)
 
     # ------------------------------------------------------------------ BIOS
     def bios(self, idx):
@@ -1120,6 +1244,11 @@ def main(argv=None):
     ap.add_argument("--backspace", "-backspace", choices=["bs", "del"], default="bs",
                     help="code sent by the Backspace key: bs = ^H (default; right for "
                          "MBASIC and most programs) or del = 7Fh (rubout)")
+    ap.add_argument("--startup", "-startup", metavar="FILE",
+                    help="host file with commands to run when the prompt starts "
+                         "(default: STARTUP.CPM on A: user 0, if present)")
+    ap.add_argument("--color", "-color", choices=["auto", "on", "off"], default="auto",
+                    help="ANSI colour in the built-in prompt, DIR and HELP (auto = on for a terminal)")
     ap.add_argument("--time", "-time", action="store_true",
                     help="after each program run print elapsed time, instruction count and "
                          "the equivalent time on a 4 MHz Z80")
@@ -1162,6 +1291,10 @@ def main(argv=None):
     cpm = CPM(console=Console(charset=ns.charset, backspace=ns.backspace), drives=drives)
     cpm.drive, cpm.user = start_drive, start_user
     cpm.timing = ns.time
+    cpm.startup = ns.startup
+    cpm.color = (ns.color == "on" or
+                 (ns.color == "auto" and not os.environ.get("NO_COLOR") and
+                  hasattr(sys.stdout, "isatty") and sys.stdout.isatty()))
     try:
         if ns.program:
             cpm.load_file(ns.program, ns.args)
