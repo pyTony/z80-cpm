@@ -1322,7 +1322,7 @@ def main(argv=None):
     ap.add_argument("--disk", "-disk", metavar="DIR",
                     help="directory holding one sub-directory per drive letter "
                          "(A, B, ...), each optionally split into user areas 0..15 "
-                         "(default with no program and no drives: ./disk if present, "
+                         "(default with no program and no drives: ./disks if present, "
                          "else you are asked whether to create it with A..P, user area 0)")
     ap.add_argument("--charset", "-charset", choices=["fi"],
                     help="fi = Finnish/Swedish 7-bit letters (a-umlaut etc. in the "
@@ -1341,16 +1341,16 @@ def main(argv=None):
     ns = ap.parse_args(argv)
     if not (ns.disk or ns.dir or ns.drive or ns.program):
         # No disks given: use ./disk if it exists; else offer to create it (A..P, user 0).
-        if os.path.isdir("disk"):
-            ns.disk = "disk"
+        if os.path.isdir("disks"):
+            ns.disk = "disks"
         elif sys.stdin.isatty():
             try:
                 ans = input("No disks given. Create folder %s with drives A: to P: here? [Y/n] "
-                            % os.path.abspath("disk")).strip().lower()
+                            % os.path.abspath("disks")).strip().lower()
             except EOFError:
                 ans = "n"
             if ans in ("", "y", "yes"):
-                ns.disk = "disk"
+                ns.disk = "disks"
                 for c in "ABCDEFGHIJKLMNOP":
                     os.makedirs(os.path.join(ns.disk, c, "0"), exist_ok=True)
     drives = {}
