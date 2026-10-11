@@ -316,6 +316,15 @@ class CpmTests(unittest.TestCase):
         con._buf = list(b"hello\x15ok\r")
         self.assertEqual(con.read_line(), b"ok")
 
+    def test_keymap_bbc(self):
+        cpm, out = make_cpm(self.tmp)
+        self.assertEqual(cpm.keymode, "auto")
+        cpm._ccp_command("KEYMAP BBC")
+        self.assertEqual(cpm.keymode, "bbc")
+        cpm._ccp_command("KEYMAP WS")
+        self.assertEqual(cpm.keymode, "ws")
+        self.assertEqual(cpm.console.keymap, "ws")
+
     def test_copy_command(self):
         for d in ("A", "B"):
             os.makedirs(os.path.join(self.tmp, d, "0"))

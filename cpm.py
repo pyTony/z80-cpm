@@ -67,6 +67,14 @@ _KEYS_ANSI = {"A": [0x05], "B": [0x18], "D": [0x13], "C": [0x04],
               "H": [0x11, 0x13], "F": [0x11, 0x04],
               "1~": [0x11, 0x13], "4~": [0x11, 0x04], "5~": [0x12],
               "6~": [0x03], "3~": [0x07], "2~": [0x16]}
+# The same keys as BBC BASIC (Z80) expects them (the key table in its start-up page):
+# ^G up, ^O down, ^J left, ^L right, ^F start of line, ^N end of line, ^R delete character,
+# ^Q insert/overwrite.  (BBC BASIC swallows ^S, so the WordStar codes do not work there.)
+_KEYS_NT_BBC = {"H": [0x07], "P": [0x0F], "K": [0x0A], "M": [0x0C],
+                "G": [0x06], "O": [0x0E], "S": [0x12], "R": [0x11]}
+_KEYS_ANSI_BBC = {"A": [0x07], "B": [0x0F], "D": [0x0A], "C": [0x0C],
+                  "H": [0x06], "F": [0x0E], "1~": [0x06], "4~": [0x0E],
+                  "3~": [0x12], "2~": [0x11]}
 QUIT_KEY = 0x1D                                                      # Ctrl-]
 
 
@@ -106,6 +114,7 @@ class Console:
         self.charset = charset
         self._buf = []
         self.history = []
+        self.keymap = "ws"             # cursor keys: WordStar codes, or "bbc" (BBC BASIC)
         self._eof_reads = 0
         self.mask = 0x7F               # 7-bit output; 0xFF after RunCPM's CONSOLE8
         self._last_poll = 0.0
@@ -266,7 +275,7 @@ class Console:
         import msvcrt
         ch = msvcrt.getwch()
         if ch in ("\x00", "\xe0"):                 # cursor / function key
-            seq = _KEYS_NT.get(msvcrt.getwch())
+            seq = (_KEYS_NT_BBC if self.keymap == "bbc" else _KEYS_NT).get(msvcrt.getwch())
             if not seq:
                 return None
             self._buf.extend(seq[1:])
@@ -305,7 +314,7 @@ class Console:
                 break
             params += x
         key = (params.decode("latin-1") + final) if final == "~" else final
-        seq = _KEYS_ANSI.get(key)
+        seq = (_KEYS_ANSI_BBC if self.keymap == "bbc" else _KEYS_ANSI).get(key)
         if not seq:
             return None
         self._buf.extend(seq[1:])
@@ -502,6 +511,7 @@ class CPM:
         self._bls, self._exm = 4096, 1
         self.dma = 0x80
         self.drive = 0           # 0 = A:
+        self.keymode = "auto"     # KEYMAP: auto (BBC keys for BBC* programs), ws or bbc
         self.user = 0
         self.exited = False
         self.timing = False
@@ -538,7 +548,7 @@ class CPM:
             251: lambda de: 0x64,                                           # "version" 6.4
             252: lambda de: 0x10,                                           # internal CCP 1.0
             253: lambda de: 0xF500,                                         # CCP address
-            254: self._f_lua,
+            254: self._f_lua, 248: self._f_ticks,
         }
         self._init_memory()
 
@@ -665,6 +675,14 @@ class CPM:
             cpu.pc = cpu._pop()
 
     # -- RunCPM extensions ----------------------------------------------------------
+    def _f_ticks(self, de):
+        """BDOS 248 (RunCPM): elapsed time as a 32-bit count, low word in HL, high word in DE.
+        One tick is a millisecond: BBC BASIC (Z80) turns it into centiseconds with a
+        32-step shift-and-compare loop that, because of its loop order, divides by 10."""
+        t = int(_clock() * 1000) & 0xFFFFFFFF
+        self.cpu.de = t >> 16
+        return t & 0xFFFF
+
     def _f_console_mask(self, de):
         self.console.mask = de & 0xFF            # 7Fh = 7-bit console, FFh = 8-bit
 
@@ -1230,9 +1248,15 @@ class CPM:
         drive = self.drive          # BDOS "select disk" (e.g. STAT probing every drive)
         self.load(program, args)    # must not change the prompt drive, as on real CP/M
         self._print("\n")
+        keymap = self.console.keymap
+        mode = self.keymode
+        if mode == "auto":
+            mode = "bbc" if cmd.split(":")[-1].upper().startswith("BBC") else "ws"
+        self.console.keymap = mode
         try:
             self.run_timed()
         finally:
+            self.console.keymap = keymap
             self._set_drive(drive)
 
     _SPEC_RE = re.compile(r"^(?:([A-Za-z])(\d{1,2})?:)?(.*)$")
@@ -1447,6 +1471,10 @@ class CPM:
         "TYPE": ("TYPE file", "Show a text file on the screen.   TYPE READ.ME"),
         "TIME": ("TIME [ON|OFF]", "Show timing after every program run: real time here, instructions,\n"
                  "T-states and the time a 4 MHz Z80 would need. Also --time on the command line."),
+        "KEYMAP": ("KEYMAP [AUTO|WS|BBC]", "Codes sent by the cursor keys, Home/End, Delete and Insert.  WS: WordStar\n"
+                   "(^E ^X ^S ^D ...) for TE, WordStar, ...  BBC: the keys BBC BASIC expects\n"
+                   "(^G ^O ^J ^L, ^F ^N, ^R, ^Q).  AUTO (default) uses BBC for programs\n"
+                   "whose name starts with BBC."),
         "PATH": ("PATH [list|NONE]", "Where commands are searched after the current drive and user.\n"
                  "Elements are DRIVE USER :  A0:  B3:  B:  $0:  ($ = current drive or user).\n"
                  "Default is  $0: A0:  (user 0 of this drive, then of A:).   PATH A0: B0: A15:\n"
@@ -1494,6 +1522,7 @@ class CPM:
             "\n  PATH [list]     command search path   ALIAS n=text   short names"
             "\n  TIME [ON|OFF]   show run timing       cmd ; cmd      several commands"
             "\n  COPY src [dst]  copy files (HELP COPY)  VIEW file    page through a file of any size"
+            "\n  KEYMAP [mode]   cursor key codes (HELP KEYMAP)"
             "\n  HELP [command]  this help (or ?)      EXIT           leave (BYE, QUIT)"
             "\n"
             "\nAnything else runs NAME.COM:  MBASIC   DUMP FILE.TXT   B:PROG"
@@ -1617,6 +1646,11 @@ class CPM:
             else:
                 self.timing = not self.timing
             self._print("\nTiming %s" % ("ON" if self.timing else "OFF"))
+        elif cmd == "KEYMAP":
+            if args and args[0].lower() in ("auto", "ws", "bbc"):
+                self.keymode = args[0].lower()
+            self._print("\nKeymap: %s%s" % (self.keymode.upper(),
+                        "  (BBC for programs named BBC*, else WordStar)" if self.keymode == "auto" else ""))
         elif cmd == "PATH":
             self._ccp_path(args)
         elif cmd == "ALIAS":

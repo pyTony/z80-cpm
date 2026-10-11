@@ -39,6 +39,8 @@ letters (`B:`), it has some ZCPR-style extras (see `HELP name`):
   entries) whose free space is computed from the real files in all user areas of the
   folder; with more than 4 MB the block size grows (up to 32 MB), beyond that it reads full.
   Nothing stops a write, the limit is only what STAT reports.
+* `KEYMAP [AUTO|WS|BBC]` - the codes the cursor keys, Home/End, Delete and Insert send:
+  WordStar style by default, the keys BBC BASIC (Z80) expects for programs named `BBC*`.
 * Line editing - Left/Right, Home/End, Delete, Backspace, `^U` (clear), Up/Down (earlier
   commands) work in the prompt, so a pasted line can be corrected before Enter.
 * `cmd1 ; cmd2` - several commands on one line; lines starting with `#` are comments.
