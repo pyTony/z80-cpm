@@ -343,6 +343,18 @@ class CpmTests(unittest.TestCase):
         con.write_bytes(b"\xdb\xb0")
         self.assertEqual(out2.getvalue(), "\u2588\u2591")
 
+    def test_play_sauce_ansimation_default_rate(self):
+        os.makedirs(os.path.join(self.tmp, "0"), exist_ok=True)
+        sauce = b"SAUCE00" + b" " * 87 + bytes([1, 2]) + b"\0" * 32
+        with open(os.path.join(self.tmp, "0", "S.ANS"), "wb") as f:
+            f.write(b"x" * 3000 + b"\x1a" + sauce)
+        cpm, out = make_cpm(self.tmp)
+        import time
+        t0 = time.time()
+        cpm._ccp_command("PLAY S.ANS")          # 3000 bytes: 0.5 s at 57600, 3 s at 9600
+        self.assertLess(time.time() - t0, 1.5)
+        self.assertNotIn("SAUCE", out.getvalue())
+
     def test_copy_command(self):
         for d in ("A", "B"):
             os.makedirs(os.path.join(self.tmp, d, "0"))

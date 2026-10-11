@@ -1281,7 +1281,7 @@ class CPM:
         """PLAY file [fps|baud]: send a terminal/ANSI stream to the screen.  A number up to
         240 is frames per second (a frame starts at ESC[H, ESC[1;1H or a form feed);
         a larger number is a baud rate (10 bits per byte).  Default: 30 fps when the file
-        has frames, else 9600 baud.  Stops at ^Z (a SAUCE record may follow), or on q/Esc."""
+        has frames, 57600 baud for a SAUCE ANSiMation, else 9600 baud.  Stops at ^Z (a SAUCE record may follow), or on q/Esc."""
         import time
         self._make_fcb(0x5C, args[0])
         path = self._fcb_path(0x5C)
@@ -1304,6 +1304,12 @@ class CPM:
             f.seek(0)
             if rate is None:
                 rate = 30.0 if len(self._FRAME_RE.findall(head)) >= 2 else 9600.0
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - 128))
+                tail = f.read()
+                f.seek(0)
+                if tail[:5] == b"SAUCE" and tail[94:96] == b"\x01\x02":
+                    rate = 57600.0      # SAUCE says ANSiMation: cursor moves, no frame marker
             frames = rate <= 240
             t0 = time.perf_counter()
             sent = 0                                    # frames (or bytes) sent
