@@ -418,7 +418,15 @@ class Console:
                 if out and (not hist or hist[-1] != bytes(out)):
                     hist.append(bytes(out))
                 return bytes(out)
-            if ch in (0x08, 0x7F):                      # Backspace
+            has_ctrl = any(c < 0x20 for c in out)       # ^Z etc. show as two columns
+            if ch in (0x08, 0x7F) and has_ctrl:
+                if out:
+                    c = out.pop()
+                    pos = len(out)
+                    put([8, 32, 8] * (2 if c < 0x20 else 1))
+            elif ch in (0x13, 0x04, 0x07, 0x11) and has_ctrl:
+                pass
+            elif ch in (0x08, 0x7F):                    # Backspace
                 if pos:
                     old = len(out)
                     pos -= 1
@@ -458,6 +466,18 @@ class Console:
                 if hi < len(hist):
                     hi += 1
                     replace(hist[hi] if hi < len(hist) else bytes(fresh))
+            elif ch == 0x0A:                            # LF ends a line too
+                self.write(0x0D)
+                self.write(0x0A)
+                return bytes(out)
+            elif ch < 0x20 and ch not in (0x0D, 0x0A):
+                # any other control key (^Z = end of file for CLINK, PIP, ...) is
+                # stored in the line and echoed as ^Z, like the real BDOS does
+                put(out[pos:])
+                pos = len(out)
+                out.append(ch)
+                pos += 1
+                put([0x5E, ch + 64])
             elif ch >= 0x20:
                 old = len(out)
                 out.insert(pos, ch)
@@ -1641,6 +1661,7 @@ class CPM:
             line = self.console.read_line()
             if line is None:
                 break
+            line = bytes(c for c in line if c >= 0x20)       # prompt ignores control keys
             if not self._ccp_line(line.decode("latin1")):
                 break
 

@@ -305,6 +305,17 @@ class CpmTests(unittest.TestCase):
         alv = cpm.bdos_call(27)
         self.assertEqual(sum(bin(m[alv + i]).count("1") for i in range(256)), 2048)
 
+    def test_line_input_keeps_ctrl_z(self):
+        cpm, out = make_cpm(self.tmp)
+        con = cpm.console
+        con._raw = "x"                      # behave like a keyboard: editing keys active
+        con._buf = list(b"\x1a\r")
+        self.assertEqual(con.read_line(), b"\x1a")          # CLINK's "^Z-<CR> to abort"
+        con._buf = list(b"abcde\x13\x13X\r")
+        self.assertEqual(con.read_line(), b"abcXde")         # cursor left, insert
+        con._buf = list(b"hello\x15ok\r")
+        self.assertEqual(con.read_line(), b"ok")
+
     def test_copy_command(self):
         for d in ("A", "B"):
             os.makedirs(os.path.join(self.tmp, d, "0"))
