@@ -71,20 +71,27 @@ letters (`B:`), it has some ZCPR-style extras (see `HELP name`):
   a 4 MHz Z80 would need (time spent waiting for keys is left out).
 * A program that selects other drives (such as `STAT`) does not change the prompt drive.
 
-## Building C programs (BDS C 1.6)
+## Building C programs (Manx Aztec C 1.06D)
 
-With the plain CP/M 2.2 set (`CC.COM`, `CC2.COM`, `CLINK.COM`, `C.CCC`, `DEFF.CRL`,
-`DEFF2.CRL`, `STDIO.H`) in the current drive and user area:
+The RomWBW disk image `hd1k_aztecc.img` holds the Aztec C compiler for CP/M-80. Copy it out
+with `IMAGE` (the path is relative to where you started the emulator):
 
 ```
-CC file          (compiles file.C to file.CRL)
-CLINK file       (links file.CRL to file.COM)
+IMAGE disks\hd1k_aztecc.img GET *.* C:
 ```
 
-All of these must be in the *same* drive and user area as the source, and user areas are
-selected with `USER n` (a drive prefix such as `C1:` does not select one; only `COPY` takes it).
-Files inside an `.LBR` library can be taken out with `LBREXT lib name U` (the library may store
-them under a crunched name such as `STDIO.HZ`). `int` is 16-bit and there is no floating point.
+Then, in the drive and user area that holds the tools (`CC.COM`, `AS.COM`, `LN.COM`, `C.LIB`)
+and the source:
+
+```
+CC HELLO.C                 (C to 8080 assembly, HELLO.ASM)
+AS HELLO.ASM               (assemble to HELLO.O)
+LN HELLO.O C.LIB           (link with the C library, giving HELLO.COM)
+```
+
+Several commands can go on one line: `CC HELLO.C ; AS HELLO.ASM ; LN HELLO.O C.LIB`. Do not
+paste the next command while a program runs, as the program may take the characters.
+This is the 1980s K&R dialect of C for the 8080, not ANSI C; `int` is 16 bit.
 
 ## RunCPM extensions
 
