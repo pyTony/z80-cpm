@@ -24,7 +24,7 @@ A Z80 CPU simulator and a CP/M 2.2 emulator, both in pure Python. No dependencie
     python cpm.py --startup FILE           # run these commands at start (else A:0 STARTUP.CPM)
     python cpm.py --color auto|on|off      # ANSI colour in the Python-made prompt/DIR output
 
-At the prompt type `HELP`. `Ctrl+]` stops the emulator immediately.
+At the prompt type `HELP`. `Ctrl+]` or `F12` stops the emulator immediately (F12 for keyboards where `]` needs AltGr, such as the Finnish one).
 
 ## The command prompt
 

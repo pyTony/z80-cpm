@@ -111,7 +111,7 @@ class Console:
     On a real terminal keys are read one at a time with no local echo (like a
     CP/M terminal), so programs such as WordStar draw their own screen without
     every key appearing twice.  Cursor keys become WordStar control codes and
-    Ctrl-] stops the emulator.  When stdin is a pipe or file, input is read as
+    Ctrl-] or F12 stops the emulator.  When stdin is a pipe or file, input is read as
     text instead (Enter = CR) and nothing is echoed.
     """
 
@@ -300,7 +300,10 @@ class Console:
         import msvcrt
         ch = msvcrt.getwch()
         if ch in ("\x00", "\xe0"):                 # cursor / function key
-            seq = _KEYTABS[self.keymap][0].get(msvcrt.getwch())
+            code = msvcrt.getwch()
+            if code == "\x86":                     # F12 stops the emulator (no AltGr needed)
+                return QUIT_KEY
+            seq = _KEYTABS[self.keymap][0].get(code)
             if not seq:
                 return None
             self._buf.extend(seq[1:])
@@ -341,6 +344,8 @@ class Console:
                 break
             params += x
         key = (params.decode("latin-1") + final) if final == "~" else final
+        if key == "24~":                           # F12 stops the emulator
+            return QUIT_KEY
         seq = _KEYTABS[self.keymap][1].get(key)
         if not seq:
             return None
@@ -354,7 +359,7 @@ class Console:
             if b is None:
                 continue
             if b == QUIT_KEY:
-                raise SystemExit("\r\n[emulator stopped with Ctrl-]]")
+                raise SystemExit("\r\n[emulator stopped with Ctrl-] or F12]")
             return b
         return None
 
@@ -1972,7 +1977,8 @@ class CPM:
                 "B:PROG runs PROG.COM from drive B. If NAME.COM is not in the current\n"
                 "user area it is also looked for in user 0, then on drive A: (user 0).\n"
                 "Try  DIR *.COM  to see what is there."),
-        "KEYS": ("Keyboard", "Ctrl+]            stop the emulator immediately (unsaved work is lost)\n"
+        "KEYS": ("Keyboard", "Ctrl+] or F12       stop the emulator immediately (unsaved work is lost);\n"
+                 "                   F12 is for keyboards where ] needs AltGr (Finnish, German ...)\n"
                  "Arrow keys, Home/End, PgUp/PgDn, Delete, Insert  ->  WordStar keys\n"
                  "                   (^E ^X ^S ^D, ^QS ^QD, ^R ^C, ^G, ^V)\n"
                  "Backspace          sends ^H (start with --backspace del for 7Fh)\n"
@@ -2006,7 +2012,7 @@ class CPM:
             "\n  HELP [command]  this help (or ?)      EXIT           leave (BYE, QUIT)"
             "\n"
             "\nAnything else runs NAME.COM:  MBASIC   DUMP FILE.TXT   B:PROG"
-            "\nHELP DIR, HELP RUN, HELP KEYS ... give details.  Ctrl+] stops the emulator.")
+            "\nHELP DIR, HELP RUN, HELP KEYS ... give details.  Ctrl+] or F12 stops the emulator.")
 
     _PATH_RE = re.compile(r"([A-P$]?)(\d{1,2}|\$)?:?$")
 
