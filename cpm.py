@@ -1499,6 +1499,47 @@ class CPM:
             self.console.keymap = keymap
             self._set_drive(drive)
 
+    _NO_OPEN = {".exe", ".bat", ".cmd", ".com", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf",
+                ".msi", ".scr", ".lnk", ".reg", ".sh", ".py", ".pif", ".jar", ".hta", ".dll"}
+
+    @staticmethod
+    def _host_open(path):
+        """Open a file with the host's default program."""
+        import subprocess
+        if sys.platform.startswith("win"):
+            os.startfile(path)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        else:
+            for tool in ("termux-open", "xdg-open", "wslview"):
+                if shutil.which(tool):
+                    subprocess.Popen([tool, path], stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+                    return
+            raise OSError("no opener found (xdg-open, termux-open ...)")
+
+    def _ccp_open(self, args):
+        """OPEN file: show a file of the current drive/user in the host's own program (PDF
+        viewer, image viewer ...).  OPEN . opens the folder.  Programs and scripts are refused."""
+        if args[0] == ".":
+            self.cpu.mem[0x5C] = 0                      # current drive
+            path = self._drive_dir(0x5C)
+        else:
+            self._make_fcb(0x5C, args[0])
+            path = self._fcb_path(0x5C)
+            if path is None:
+                self._print("\n" + self._c("red", "NO FILE"))
+                return
+            if os.path.splitext(path)[1].lower() in self._NO_OPEN:
+                self._print("\n" + self._c("red", "NOT OPENED") +
+                            " (programs and scripts are not started from here; run them as CP/M programs)")
+                return
+        try:
+            self._host_open(path)
+            self._print("\nOpened " + ("the folder" if args[0] == "." else os.path.basename(path)))
+        except OSError as e:
+            self._print("\n" + self._c("red", "CANNOT OPEN") + " %s" % e)
+
     def _ccp_debug_empty(self):
         self._init_memory()
         self.exited = False
@@ -1953,6 +1994,9 @@ class CPM:
                   "(Z80, Z180 with --cpu z180), D dump, R registers (R HL 1234 sets one), T [n] trace n\n"
                   "instructions, P step over CALL/loops, G go, B/BC breakpoints, E/F enter/fill bytes,\n"
                   "H help, Q leave.  Numbers are hex.  DEBUG alone gives an empty memory to E-nter code in."),
+        "OPEN": ("OPEN file | OPEN .", "Open a file of the current drive and user area in the host's own program, such as\n"
+                 "a PDF manual or a picture:   OPEN Z80ASM.PDF.   OPEN . opens the folder.  Programs\n"
+                 "and scripts (.EXE, .COM, .BAT, .PS1 ...) are refused."),
         "KEYMAP": ("KEYMAP [AUTO|WS|BBC|BBC3]", "Codes sent by the cursor keys, Home/End, Delete and Insert.  WS: WordStar\n"
                    "(^E ^X ^S ^D ...) for TE, WordStar, ...  BBC: the keys BBC BASIC expects\n"
                    "(^G ^O ^J ^L, ^F ^N, ^R, ^Q).  BBC3: BBC BASIC 3.00 (no cursor editing; Backspace\n"
@@ -2009,6 +2053,7 @@ class CPM:
             "\n  KEYMAP [mode]   cursor key codes      PLAY file [fps] show an ANSI stream/animation"
             "\n  IMAGE file ...  list/extract files of a CP/M disk image"
             "\n  DEBUG [file]    disassemble, trace, breakpoints   Z3 [ON|OFF]  ZCPR3 environment"
+            "\n  OPEN file       open a file (PDF, picture ...) in the host's own program"
             "\n  HELP [command]  this help (or ?)      EXIT           leave (BYE, QUIT)"
             "\n"
             "\nAnything else runs NAME.COM:  MBASIC   DUMP FILE.TXT   B:PROG"
@@ -2149,6 +2194,8 @@ class CPM:
             self._print("\nZCPR3 environment: %s" % ("ON" if self.z3 else "OFF"))
             if self.z3:
                 self._print("\n  " + z3env.describe())
+        elif cmd == "OPEN" and args:
+            self._ccp_open(args)
         elif cmd in ("DEBUG", "DBG"):
             self._ccp_run(args[0], args[1:], debug=True) if args else self._ccp_debug_empty()
         elif cmd == "PATH":

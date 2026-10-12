@@ -76,6 +76,9 @@ letters (`B:`), it has some ZCPR-style extras (see `HELP name`):
   address can also be a register with an offset (`D HL`, `L PC+4`, `D SP`, `B IX-2`; write
   hex BC, DE or AF as 0BC ...). BDOS
   calls run as one step. `DEBUG` alone starts with empty memory to type code into.
+* `OPEN file` - open a file of the current drive and user area in the host's own program, for
+  example `OPEN Z80ASM.PDF` for a manual; `OPEN .` opens the folder. Programs and scripts
+  (`.EXE`, `.COM`, `.BAT`, `.PS1` ...) are refused.
 * `Z3 [ON|OFF]` (or `--z3`) - a ZCPR3 environment for individual Z-System tools such as
   `Z3LOC`, `ZSHOW` and `SETPATH` (`PATH.COM`; the built-in `PATH` command is a different
   thing): the 256-byte environment descriptor, path, wheel byte, message buffers and an ANSI

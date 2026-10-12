@@ -740,6 +740,25 @@ class CpmTests(unittest.TestCase):
         self.assertIn("0106  76", text)                # L PC+3: HALT after the CALL
         self.assertIn("0001  03", text)               # L HL-1233: address 1
 
+    def test_open_command(self):
+        os.makedirs(os.path.join(self.tmp, "0"), exist_ok=True)
+        for n in ("MANUAL.PDF", "RUN.COM", "S.PS1"):
+            with open(os.path.join(self.tmp, "0", n), "wb") as f:
+                f.write(b"x")
+        cpm, out = make_cpm(self.tmp)
+        opened = []
+        cpm._host_open = opened.append
+        cpm._ccp_command("OPEN manual.pdf")
+        cpm._ccp_command("OPEN run.com")
+        cpm._ccp_command("OPEN s.ps1")
+        cpm._ccp_command("OPEN nothere.pdf")
+        cpm._ccp_command("OPEN .")
+        self.assertEqual([os.path.basename(p) for p in opened[:1]], ["MANUAL.PDF"])
+        self.assertEqual(len(opened), 2)                    # the PDF and the folder only
+        self.assertTrue(os.path.isdir(opened[1]))
+        self.assertIn("NOT OPENED", out.getvalue())
+        self.assertIn("NO FILE", out.getvalue())
+
     def test_copy_command(self):
         for d in ("A", "B"):
             os.makedirs(os.path.join(self.tmp, d, "0"))
