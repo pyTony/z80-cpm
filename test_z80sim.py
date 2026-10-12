@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 
-from z80sim import Z80, SF, ZF, HF, PF, NF, CF
+from z80sim import Z80, Z180, SF, ZF, HF, PF, NF, CF
 from cpm import CPM, Console
 
 
@@ -120,6 +120,69 @@ class _SlowZ80(Z80):
     """Overriding rd disables the fast handlers, so run_fast uses plain step()."""
     def rd(self, addr):
         return self.mem[addr & 0xFFFF]
+
+
+class Z180Tests(unittest.TestCase):
+    PROG = [0x01, 0x34, 0x12,            # LD BC,1234h
+            0xED, 0x4C,                  # MLT BC      (12h*34h = 03A8h)
+            0x11, 0x0A, 0x0B,            # LD DE,0B0Ah
+            0xED, 0x5C,                  # MLT DE      (0Bh*0Ah = 006Eh)
+            0x21, 0xFF, 0xFF,            # LD HL,FFFFh
+            0xED, 0x6C,                  # MLT HL      (FEh01 = FE01h)
+            0x31, 0x05, 0x07,            # LD SP,0705h
+            0xED, 0x7C,                  # MLT SP      (07h*05h = 0023h)
+            0x3E, 0xF0, 0xED, 0x64, 0x0F,  # LD A,F0h ; TST 0Fh
+            0x76]
+
+    def _run(self, fast):
+        cpu = Z180()
+        cpu.mem[0:len(self.PROG)] = bytes(self.PROG)
+        if fast:
+            cpu.run_fast()
+        else:
+            cpu.run_until_halt()
+        return cpu
+
+    def test_mlt_and_tst(self):
+        for fast in (False, True):
+            cpu = self._run(fast)
+            self.assertEqual((cpu.bc, cpu.de, cpu.hl, cpu.sp), (0x03A8, 0x006E, 0xFE01, 0x0023))
+            self.assertEqual(cpu.a, 0xF0)                    # TST leaves A alone
+            self.assertEqual(cpu.f & (ZF | HF | NF | CF), ZF | HF)
+
+    def test_z80_still_has_neg_aliases(self):
+        cpu = run([0x3E, 0x01, 0xED, 0x4C, 0x76])             # undocumented NEG on a Z80
+        self.assertEqual(cpu.a, 0xFF)
+
+    def test_in0_out0_tstio(self):
+        seen = []
+        cpu = Z180(io_read=lambda p: 0x81 if p == 0x12 else 0x0F,
+                   io_write=lambda p, v: seen.append((p, v)))
+        code = [0x06, 0x55,              # LD B,55h
+                0xED, 0x01, 0x34,        # OUT0 (34h),B
+                0xED, 0x38, 0x12,        # IN0 A,(12h)
+                0x0E, 0x20,              # LD C,20h
+                0xED, 0x74, 0x0F,        # TSTIO 0Fh   (port C reads 0Fh)
+                0x76]
+        cpu.mem[0:len(code)] = bytes(code)
+        cpu.run_until_halt()
+        self.assertEqual(seen, [(0x34, 0x55)])
+        self.assertEqual(cpu.a, 0x81)
+        self.assertEqual(cpu.f & (ZF | HF | CF), HF)
+
+    def test_otimr_and_slp(self):
+        seen = []
+        cpu = Z180(io_write=lambda p, v: seen.append((p, v)))
+        code = [0x21, 0x00, 0x10,        # LD HL,1000h
+                0x06, 0x03, 0x0E, 0x08,  # LD B,3 ; LD C,8
+                0xED, 0x93,              # OTIMR
+                0xED, 0x76]              # SLP
+        cpu.mem[0:len(code)] = bytes(code)
+        cpu.mem[0x1000:0x1003] = bytes([1, 2, 3])
+        cpu.run_until_halt()
+        self.assertEqual(seen, [(8, 1), (9, 2), (10, 3)])
+        self.assertEqual((cpu.r[0], cpu.r[1], cpu.hl), (0, 11, 0x1003))
+        self.assertTrue(cpu.halted)
 
 
 class FastCoreTests(unittest.TestCase):

@@ -32,6 +32,8 @@ _COND_MASK = (ZF, ZF, CF, CF, PF, PF, SF, SF)   # NZ Z NC C PO PE P M
 
 
 class Z80:
+    z180 = False                  # True in Z180: the extra ED opcodes (see class Z180)
+
     def __init__(self, memory=None, io_read=None, io_write=None):
         self.mem = memory if memory is not None else bytearray(0x10000)
         self.io_read = io_read or (lambda port: 0xFF)
@@ -840,8 +842,10 @@ class Z80:
 
     # ----------------------------------------------------------------- ED
     def _ed(self):
+        return self._ed_op(self._fetch_op())
+
+    def _ed_op(self, op):
         r = self.r
-        op = self._fetch_op()
         x = op >> 6; y = (op >> 3) & 7; z = op & 7; p = y >> 1; q = y & 1
 
         if x == 1:
@@ -1007,6 +1011,70 @@ _ALU = [
      "cpu.f=((a^v^res)&16)|(((a^v)&(a^res)&128)>>5)|2|((res>>8)&1)|(SZ53[rr]&192)|(v&40)"],
 ]
 _CC_MASK = (64, 64, 1, 1, 4, 4, 128, 128)
+
+
+_Z180_ED_NEG_SLOTS = (0x4C, 0x5C, 0x6C, 0x7C, 0x64, 0x74)   # NEG aliases the Z180 uses for MLT/TST
+
+
+class Z180(Z80):
+    """Hitachi HD64180 / Zilog Z180 CPU: the Z80 plus MLT, TST, TSTIO, IN0/OUT0, OTIM/OTDM(R)
+    and SLP.  Not emulated: the MMU (CBAR/BBR/CBR), the on-chip peripherals and the traps on
+    undefined opcodes (those stay NOPs).  Internal I/O ports (0x00-0x3F) reach io_read/io_write
+    like any other port, with the high address byte 0."""
+    z180 = True
+
+    def _ed_op(self, op):
+        r = self.r
+        x = op >> 6; y = (op >> 3) & 7; z = op & 7
+        if x == 0 and z == 0:                                 # IN0 r,(m)  (ED 30: flags only)
+            v = self.io_read(self._fetch()) & 0xFF
+            if y != 6:
+                r[y] = v
+            self.f = (self.f & CF) | SZ53P[v]
+            return 12
+        if x == 0 and z == 1 and y != 6:                      # OUT0 (m),r
+            self.io_write(self._fetch(), r[y])
+            return 13
+        if x == 0 and z == 4:                                 # TST r / TST (HL)
+            if y == 6:
+                v = self.rd(self.hl); t = 10
+            else:
+                v = r[y]; t = 7
+            self.f = SZ53P[r[7] & v] | HF
+            return t
+        if x == 1 and z == 4:
+            if y == 4:                                        # TST n
+                self.f = SZ53P[r[7] & self._fetch()] | HF
+                return 9
+            if y == 6:                                        # TSTIO n
+                v = self.io_read(r[1]) & 0xFF
+                self.f = SZ53P[v & self._fetch()] | HF
+                return 12
+            if y & 1:                                         # MLT ss
+                p = y >> 1
+                if p == 3:
+                    v = ((self.sp >> 8) * (self.sp & 0xFF)) & 0xFFFF
+                    self.sp = v
+                else:
+                    v = r[2 * p] * r[2 * p + 1]
+                    r[2 * p] = v >> 8
+                    r[2 * p + 1] = v & 0xFF
+                return 17
+        if x == 1 and op == 0x76:                             # SLP: sleep until an interrupt
+            self.halted = True
+            return 8
+        if x == 2 and z == 3 and y < 4:                       # OTIM OTIMR OTDM OTDMR
+            hl = self.hl
+            self.io_write(r[1], self.rd(hl))
+            step = 1 if y in (0, 2) else -1
+            self.hl = (hl + step) & 0xFFFF
+            r[1] = (r[1] + step) & 0xFF
+            r[0] = (r[0] - 1) & 0xFF
+            self.f = (self.f & CF) | SZ53[r[0]] | NF
+            if y in (2, 3) and r[0]:                          # repeat forms: back to the opcode
+                self.pc = (self.pc - 2) & 0xFFFF
+            return 14
+        return Z80._ed_op(self, op)
 
 
 def _cc(y):
@@ -1322,7 +1390,7 @@ def _build_fast_ops(cpu):
     cb = [compile_one(_cb_template(o)[0], "CB %02X" % o) for o in range(256)]
     ed = []
     for o in range(256):
-        body = _ed_template(o)
+        body = None if (cpu.z180 and o in _Z180_ED_NEG_SLOTS) else _ed_template(o)
         if body is None:
             body = ["cpu.xy=None", "cpu.pc=pc", "cpu.tx+=cpu._ed()"] + _POST
         ed.append(compile_one(body, "ED %02X" % o))

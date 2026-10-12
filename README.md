@@ -43,6 +43,9 @@ letters (`B:`), it has some ZCPR-style extras (see `HELP name`):
   WordStar style by default, the keys BBC BASIC (Z80) expects for programs named `BBC*`.
 * Line editing - Left/Right, Home/End, Delete, Backspace, `^U` (clear), Up/Down (earlier
   commands) work in the prompt, so a pasted line can be corrected before Enter.
+* `--cpu z180` - HD64180/Z180 instructions on top of the Z80: `MLT`, `TST`, `TSTIO`,
+  `IN0`/`OUT0`, `OTIM`/`OTDM` (and `R` forms), `SLP`. No MMU or on-chip peripherals; undefined
+  opcodes stay NOPs. A Z80 build of the same program still runs unchanged.
 * `PLAY file [fps|baud] [RAW]` - play an ANSI/terminal stream (e.g. an ANSI "Bad Apple"). Frames
   start at `ESC[H`, `ESC[1;1H` or a form feed and are paced at fps (default 30 when the file
   has frames, 57600 baud for a SAUCE ANSiMation such as Bad Apple; a number above 240 is a baud rate, default 9600 otherwise). Stops at `^Z`

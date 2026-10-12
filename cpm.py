@@ -34,7 +34,7 @@ import re
 import shutil
 import sys
 
-from z80sim import Z80
+from z80sim import Z80, Z180
 
 TPA = 0x0100
 BDOS_BASE = 0xFD00
@@ -1997,6 +1997,8 @@ def main(argv=None):
                          "(default: STARTUP.CPM on A: user 0, if present)")
     ap.add_argument("--color", "-color", choices=["auto", "on", "off"], default="auto",
                     help="ANSI colour in the built-in prompt, DIR and HELP (auto = on for a terminal)")
+    ap.add_argument("--cpu", "-cpu", choices=["z80", "z180"], default="z80",
+                    help="z180: also MLT, TST, IN0/OUT0, OTIM/OTDM(R), SLP (no MMU)")
     ap.add_argument("--time", "-time", action="store_true",
                     help="after each program run print elapsed time, instruction count and "
                          "the equivalent time on a 4 MHz Z80")
@@ -2050,7 +2052,8 @@ def main(argv=None):
             drives[letter] = pdir
             found = (letter, 0)
         start_drive, start_user = ord(found[0]) - 65, found[1]
-    cpm = CPM(console=Console(charset=ns.charset, backspace=ns.backspace), drives=drives)
+    cpm = CPM(console=Console(charset=ns.charset, backspace=ns.backspace), drives=drives,
+              cpu=Z180() if ns.cpu == "z180" else None)
     cpm.drive, cpm.user = start_drive, start_user
     cpm.timing = ns.time
     cpm.startup = ns.startup
