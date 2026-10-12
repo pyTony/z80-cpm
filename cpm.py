@@ -1812,8 +1812,8 @@ class CPM:
             return
         out = self.console
         with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-            head = mm[:4096]
-            binary = b"\0" in head or sum(1 for c in head if c < 32 and c not in b"\t\r\n\f\x1a\x1b") * 10 > len(head)
+            head = bytes(mm[:4096]).split(b"\x1a")[0].rstrip(b"\0")   # ^Z / NUL padding is not binary
+            binary = b"\0" in head or sum(1 for c in head if c < 32 and c not in b"\t\r\n\f\x1b\x08") * 10 > len(head)
             hexmode = [mode == "hex" or (mode == "auto" and binary)]
             end = mm.find(b"\x1a")
             end = size if end < 0 or hexmode[0] else end

@@ -672,6 +672,13 @@ class CpmTests(unittest.TestCase):
         text = out.getvalue()
         self.assertIn("00000000  00 01 02 03 04 05 06 07  08 09 0a 0b 0c 0d 0e 0f", text)
         self.assertIn("|Hello, Z3ENV.", text)               # past the ^Z: all bytes shown
+        ppath = os.path.join(self.tmp, "0", "PAD.TXT")      # text padded with NULs / ^Z is still text
+        with open(ppath, "wb") as f:
+            f.write(b"plain words\r\n" + b"\x1a" * 100 + bytes(300))
+        cpm, out = make_cpm(self.tmp, stdin="q")
+        cpm._ccp_view(ppath, "PAD.TXT")
+        self.assertIn("plain words", out.getvalue())
+        self.assertNotIn("00000000", out.getvalue())
         tpath = os.path.join(self.tmp, "0", "T.TXT")
         with open(tpath, "wb") as f:
             f.write(b"line one\r\nline two\r\n")
