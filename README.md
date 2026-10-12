@@ -39,8 +39,11 @@ letters (`B:`), it has some ZCPR-style extras (see `HELP name`):
   entries) whose free space is computed from the real files in all user areas of the
   folder; with more than 4 MB the block size grows (up to 32 MB), beyond that it reads full.
   Nothing stops a write, the limit is only what STAT reports.
-* `KEYMAP [AUTO|WS|BBC]` - the codes the cursor keys, Home/End, Delete and Insert send:
-  WordStar style by default, the keys BBC BASIC (Z80) expects for programs named `BBC*`.
+* `KEYMAP [AUTO|WS|BBC|BBC3]` - the codes the cursor keys, Home/End, Delete and Insert send:
+  WordStar style by default, the keys BBC BASIC (Z80) expects for programs named `BBC*`
+  (version 5; version 3.00 as in cpm-dist has no cursor editing, so Backspace sends DEL for
+  it). Also when the program is started straight from the command line. Alt+letter is
+  Ctrl+letter for terminals without a Ctrl key (e.g. Termux).
 * Line editing - Left/Right, Home/End, Delete, Backspace, `^U` (clear), Up/Down (earlier
   commands) work in the prompt, so a pasted line can be corrected before Enter.
 * `--cpu z180` - HD64180/Z180 instructions on top of the Z80: `MLT`, `TST`, `TSTIO`,

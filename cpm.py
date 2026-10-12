@@ -75,6 +75,13 @@ _KEYS_NT_BBC = {"H": [0x07], "P": [0x0F], "K": [0x0A], "M": [0x0C],
 _KEYS_ANSI_BBC = {"A": [0x07], "B": [0x0F], "D": [0x0A], "C": [0x0C],
                   "H": [0x06], "F": [0x0E], "1~": [0x06], "4~": [0x0E],
                   "3~": [0x12], "2~": [0x11]}
+# BBC BASIC (Z80) 3.00 (the generic build in cpm-dist) has no cursor editing: only DEL (7F)
+# deletes a character, and ^A/^E/^U wipe the line.  So the cursor keys send nothing, and
+# Backspace must send DEL there (^H is ignored).
+_KEYS_NT_BBC3 = {}
+_KEYS_ANSI_BBC3 = {}
+_KEYTABS = {"ws": (_KEYS_NT, _KEYS_ANSI), "bbc": (_KEYS_NT_BBC, _KEYS_ANSI_BBC),
+            "bbc3": (_KEYS_NT_BBC3, _KEYS_ANSI_BBC3)}
 QUIT_KEY = 0x1D                                                      # Ctrl-]
 
 
@@ -291,13 +298,13 @@ class Console:
         import msvcrt
         ch = msvcrt.getwch()
         if ch in ("\x00", "\xe0"):                 # cursor / function key
-            seq = (_KEYS_NT_BBC if self.keymap == "bbc" else _KEYS_NT).get(msvcrt.getwch())
+            seq = _KEYTABS[self.keymap][0].get(msvcrt.getwch())
             if not seq:
                 return None
             self._buf.extend(seq[1:])
             return seq[0]
         if ch == "\x08":                           # Backspace key
-            return 0x08 if self.backspace == "bs" else 0x7F
+            return 0x7F if self.keymap == "bbc3" or self.backspace != "bs" else 0x08
         return self._map_in(ch)
 
     def _key_posix(self):
@@ -308,7 +315,7 @@ class Console:
             return None
         c = b[0]
         if c in (0x08, 0x7F):                      # Backspace key
-            return 0x08 if self.backspace == "bs" else 0x7F
+            return 0x7F if self.keymap == "bbc3" or self.backspace != "bs" else 0x08
         if c >= 0x80:                              # UTF-8 byte
             ch = self._dec.decode(b)
             return self._map_in(ch) if ch else None
@@ -318,6 +325,8 @@ class Console:
             return 0x1B                            # a lone Esc key
         n = os.read(self._fd, 1)
         if n not in (b"[", b"O"):
+            if n.isalpha():                        # Alt+letter (ESC letter) = Ctrl+letter
+                return n[0] & 0x1F
             self._buf.extend(n)
             return 0x1B
         params = b""
@@ -330,7 +339,7 @@ class Console:
                 break
             params += x
         key = (params.decode("latin-1") + final) if final == "~" else final
-        seq = (_KEYS_ANSI_BBC if self.keymap == "bbc" else _KEYS_ANSI).get(key)
+        seq = _KEYTABS[self.keymap][1].get(key)
         if not seq:
             return None
         self._buf.extend(seq[1:])
@@ -764,6 +773,20 @@ class CPM:
     def load_file(self, path, args=()):
         with open(path, "rb") as f:
             self.load(f.read(), args)
+        self._set_keymap(path, None)
+
+    def _set_keymap(self, name, program=None):
+        """Pick the cursor-key codes for the program just loaded (see KEYMAP)."""
+        mode = self.keymode
+        if mode == "auto":
+            mode = "ws"
+            if os.path.basename(name.replace(":", "/")).upper().startswith("BBC"):
+                if program is None:
+                    with open(name, "rb") as f:
+                        program = f.read()
+                m = re.search(rb"BBC BASIC \(Z80\) Version (\d+)", program)
+                mode = "bbc3" if m and int(m.group(1)) < 4 else "bbc"
+        self.console.keymap = mode
 
     # ------------------------------------------------------------------- run
     def run(self, max_steps=None):
@@ -1395,10 +1418,7 @@ class CPM:
         self.load(program, args)    # must not change the prompt drive, as on real CP/M
         self._print("\n")
         keymap = self.console.keymap
-        mode = self.keymode
-        if mode == "auto":
-            mode = "bbc" if cmd.split(":")[-1].upper().startswith("BBC") else "ws"
-        self.console.keymap = mode
+        self._set_keymap(cmd, program)
         try:
             self.run_timed()
         finally:
@@ -1707,10 +1727,11 @@ class CPM:
                  "A number up to 240 is frames per second (frames start at ESC[H); a larger one\n"
                  "is a modem speed such as 9600.  Default: 30 fps for animations, else 9600 baud.\n"
                  "q or Esc stops.  Start with --charset cp437 for the IBM block characters."),
-        "KEYMAP": ("KEYMAP [AUTO|WS|BBC]", "Codes sent by the cursor keys, Home/End, Delete and Insert.  WS: WordStar\n"
+        "KEYMAP": ("KEYMAP [AUTO|WS|BBC|BBC3]", "Codes sent by the cursor keys, Home/End, Delete and Insert.  WS: WordStar\n"
                    "(^E ^X ^S ^D ...) for TE, WordStar, ...  BBC: the keys BBC BASIC expects\n"
-                   "(^G ^O ^J ^L, ^F ^N, ^R, ^Q).  AUTO (default) uses BBC for programs\n"
-                   "whose name starts with BBC."),
+                   "(^G ^O ^J ^L, ^F ^N, ^R, ^Q).  BBC3: BBC BASIC 3.00 (no cursor editing; Backspace\n"
+                   "sends DEL).  AUTO (default) uses BBC/BBC3 for programs named BBC*, by version.\n"
+                   "On a phone: Alt+letter (or ESC then letter, sent together) is Ctrl+letter."),
         "PATH": ("PATH [list|NONE]", "Where commands are searched after the current drive and user.\n"
                  "Elements are DRIVE USER :  A0:  B3:  B:  $0:  ($ = current drive or user).\n"
                  "Default is  $0: A0:  (user 0 of this drive, then of A:).   PATH A0: B0: A15:\n"
@@ -1885,10 +1906,10 @@ class CPM:
         elif cmd == "PLAY" and args:
             self._ccp_play(args)
         elif cmd == "KEYMAP":
-            if args and args[0].lower() in ("auto", "ws", "bbc"):
+            if args and args[0].lower() in ("auto", "ws", "bbc", "bbc3"):
                 self.keymode = args[0].lower()
             self._print("\nKeymap: %s%s" % (self.keymode.upper(),
-                        "  (BBC for programs named BBC*, else WordStar)" if self.keymode == "auto" else ""))
+                        "  (BBC for programs named BBC*: BBC3 for version 3, else WordStar)" if self.keymode == "auto" else ""))
         elif cmd == "PATH":
             self._ccp_path(args)
         elif cmd == "ALIAS":

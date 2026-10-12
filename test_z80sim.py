@@ -433,6 +433,18 @@ class CpmTests(unittest.TestCase):
         self.assertEqual([[c for c, _ in r] for r in a.cells], [[c for c, _ in r] for r in b.cells])
         self.assertEqual(a.render(), b"")               # nothing changed, nothing sent
 
+    def test_keymap_auto_by_bbc_version(self):
+        cpm, out = make_cpm(self.tmp)
+        v3 = b"\0" * 20 + b"BBC BASIC (Z80) Version 3.00  "
+        v5 = b"\0" * 20 + b"BBC BASIC (Z80) Version 5.00  "
+        for name, prog, want in (("BBCBASIC.COM", v3, "bbc3"), ("B:BBCBASIC.COM", v5, "bbc"),
+                                 ("EDIT.COM", v3, "ws")):
+            cpm._set_keymap(name, prog)
+            self.assertEqual(cpm.console.keymap, want, name)
+        cpm._ccp_command("KEYMAP BBC3")
+        cpm._set_keymap("EDIT.COM", b"")
+        self.assertEqual(cpm.console.keymap, "bbc3")
+
     def test_copy_command(self):
         for d in ("A", "B"):
             os.makedirs(os.path.join(self.tmp, d, "0"))
