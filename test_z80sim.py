@@ -170,6 +170,44 @@ class Z180Tests(unittest.TestCase):
         self.assertEqual(cpu.a, 0x81)
         self.assertEqual(cpu.f & (ZF | HF | CF), HF)
 
+    def test_mlt_edges_keep_flags(self):
+        cpu = Z180()
+        code = [0x01, 0xFF, 0xFF, 0x37, 0xED, 0x4C, 0x76]      # LD BC,FFFFh ; SCF ; MLT BC
+        cpu.mem[0:len(code)] = bytes(code)
+        cpu.run_until_halt()
+        self.assertEqual(cpu.bc, 0xFE01)
+        self.assertTrue(cpu.f & CF)                              # MLT leaves the flags alone
+
+    def test_tst_flags(self):
+        cpu = Z180()
+        code = [0x3E, 0x81, 0x37, 0xED, 0x64, 0x80, 0x76]      # LD A,81h ; SCF ; TST 80h
+        cpu.mem[0:len(code)] = bytes(code)
+        cpu.run_until_halt()
+        self.assertEqual(cpu.a, 0x81)
+        self.assertEqual(cpu.f & (SF | ZF | HF | NF | CF), SF | HF)   # C cleared, H set
+
+    def test_slp_wakes_on_interrupt(self):
+        cpu = Z180()
+        code = [0xED, 0x56, 0xFB, 0xED, 0x76]                  # IM 1 ; EI ; SLP
+        cpu.mem[0:len(code)] = bytes(code)
+        cpu.mem[0x38:0x3A] = bytes([0x3E, 0x2A])               # handler: LD A,2Ah
+        cpu.run_until_halt()
+        self.assertTrue(cpu.halted)
+        cpu.request_irq()
+        cpu.step()
+        self.assertFalse(cpu.halted)
+        self.assertEqual(cpu.pc, 0x38)
+
+    def test_otdmr_goes_downward(self):
+        seen = []
+        cpu = Z180(io_write=lambda p, v: seen.append((p, v)))
+        code = [0x21, 0x02, 0x10, 0x06, 0x03, 0x0E, 0x10, 0xED, 0x9B, 0x76]   # OTDMR
+        cpu.mem[0:len(code)] = bytes(code)
+        cpu.mem[0x1000:0x1003] = bytes([1, 2, 3])
+        cpu.run_until_halt()
+        self.assertEqual(seen, [(0x10, 3), (0x0F, 2), (0x0E, 1)])
+        self.assertEqual((cpu.r[0], cpu.r[1], cpu.hl), (0, 0x0D, 0x0FFF))
+
     def test_otimr_and_slp(self):
         seen = []
         cpu = Z180(io_write=lambda p, v: seen.append((p, v)))
