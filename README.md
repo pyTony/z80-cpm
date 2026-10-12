@@ -72,7 +72,9 @@ letters (`B:`), it has some ZCPR-style extras (see `HELP name`):
   `L` disassemble (Z80, and the Z180 extras with `--cpu z180`; the CP/M `DDT` knows only the
   8080), `D` dump, `R` registers (`R HL 1234` sets one), `T [n]` trace n instructions with the
   registers after each, `P` step over a `CALL`, `DJNZ` or block loop, `G` go, `B`/`BC`
-  breakpoints, `E`/`F` enter/fill bytes, `H` help, `Q` leave. Numbers are hexadecimal. BDOS
+  breakpoints, `E`/`F` enter/fill bytes, `H` help, `Q` leave. Numbers are hexadecimal; an
+  address can also be a register with an offset (`D HL`, `L PC+4`, `D SP`, `B IX-2`; write
+  hex BC, DE or AF as 0BC ...). BDOS
   calls run as one step. `DEBUG` alone starts with empty memory to type code into.
 * `Z3 [ON|OFF]` (or `--z3`) - a ZCPR3 environment for individual Z-System tools such as
   `Z3LOC`, `ZSHOW` and `SETPATH` (`PATH.COM`; the built-in `PATH` command is a different

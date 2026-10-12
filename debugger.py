@@ -2,6 +2,7 @@
 
 Commands (numbers are hexadecimal):
   L [addr [count]]   disassemble          D [addr [end]]   dump memory
+  (addresses may be hex numbers or registers, with + and -:  D HL   L PC+4   D SP  B IX+3)
   R [reg value]      registers / set one  E addr byte...   enter bytes
   T [n]              trace n instructions F start end byte fill memory
   P                  like T, but runs a CALL/RST/DJNZ/block instruction as one step
@@ -61,9 +62,30 @@ class Debugger:
                   c.iff1, c.iff2))
         self.out("\n" + self.line(c.pc)[1])
 
-    @staticmethod
-    def num(text):
-        return int(text.rstrip("hH"), 16) & 0xFFFF
+    def num(self, text):
+        """An address: hex numbers and register names (PC SP HL BC DE IX IY AF), joined
+        with + and -.  A name wins over hex, so write BC, DE or AF as 0BC, 0DE, 0AF."""
+        total, sign, term = 0, 1, ""
+        for ch in text.replace(" ", "") + "+":
+            if ch in "+-":
+                if term:
+                    total += sign * self.term(term)
+                    term = ""
+                elif ch == "-" and not term and total == 0 and sign == 1:
+                    sign = -1
+                    continue
+                sign = 1 if ch == "+" else -1
+            else:
+                term += ch
+        return total & 0xFFFF
+
+    def term(self, t):
+        u = t.upper()
+        if u in _PAIRS:
+            return getattr(self.cpu, u.lower())
+        if u in _BYTES:
+            return self.cpu.r[_BYTES[u]]
+        return int(u.rstrip("H"), 16)
 
     # --------------------------------------------------------------- stepping
     def step(self):

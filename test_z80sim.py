@@ -731,6 +731,15 @@ class CpmTests(unittest.TestCase):
         self.assertIn("BC=0102", text)
         self.assertIn("21 34 12 CD 10 01 76", text)
 
+    def test_debug_register_addresses(self):
+        cpm, out = make_cpm(self.tmp, stdin=(
+            "E 100 21 34 12 CD 10 01 76\nE 1234 DE AD\nB 103\nG\nD HL 1235\nL PC+3 1\nL HL-1233 1\nQ\n"))
+        cpm._ccp_debug_empty()
+        text = out.getvalue()
+        self.assertRegex(text, r"1230 +DE AD")            # D HL
+        self.assertIn("0106  76", text)                # L PC+3: HALT after the CALL
+        self.assertIn("0001  03", text)               # L HL-1233: address 1
+
     def test_copy_command(self):
         for d in ("A", "B"):
             os.makedirs(os.path.join(self.tmp, d, "0"))
