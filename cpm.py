@@ -1573,6 +1573,108 @@ class CPM:
             done += 1
         self._print("\n%d file%s copied" % (done, "" if done == 1 else "s"))
 
+    # ----------------------------------------------------------------- IMAGE
+    def _host_file(self, name):
+        """A host file by (case-insensitive) name in the current drive folder, then the
+        working directory, then as given."""
+        for base in (self._spec_dir(None, None)[0], os.getcwd()):
+            try:
+                for e in os.listdir(base or "."):
+                    if e.lower() == name.lower() and os.path.isfile(os.path.join(base, e)):
+                        return os.path.join(base, e)
+            except OSError:
+                pass
+        return name if os.path.isfile(name) else None
+
+    def _ccp_image(self, args):
+        """IMAGE file [format[:slice]] [GET [n:]pattern [dest]]: list, or copy files out of, a
+        raw CP/M disk image (floppy or RomWBW hard disk slices).  IMAGE ? lists the formats."""
+        import diskimg
+        defs = {}
+        dd = self._host_file("diskdefs")
+        if dd:
+            with open(dd, errors="replace") as f:
+                defs = diskimg.parse_diskdefs(f.read())
+        if not args or args[0] == "?":
+            self._print("\nFormats (IMAGE file name[:slice]):")
+            for f in dict(diskimg.BUILTIN, **defs).values():
+                self._print("\n  %-10s %4d tracks x %2d sectors x %3d bytes, %4d dir entries, %dK blocks"
+                            % (f.name, f.tracks, f.sectrk, f.seclen, f.maxdir, f.blocksize // 1024))
+            self._print("\nWithout a format it is guessed.  A cpmtools DISKDEFS file here adds more.")
+            return
+        path = self._host_file(args[0])
+        if path is None:
+            self._print("\n" + self._c("red", "NO FILE %s" % args[0]))
+            return
+        rest = list(args[1:])
+        spec = rest.pop(0) if rest and rest[0].upper() != "GET" else None
+        with open(path, "rb") as f:
+            data = f.read()
+        if spec:
+            fmt, sl = diskimg.resolve(spec, defs)
+            if fmt is None:
+                self._print("\n" + self._c("red", "UNKNOWN FORMAT %s  (IMAGE ? lists them)" % spec))
+                return
+            img = diskimg.Image(data, fmt, sl)
+        else:
+            img = diskimg.detect(data, defs)
+            if img is None:
+                self._print("\n" + self._c("red", "FORMAT? None of the known formats fits; try IMAGE ? or DISKDEFS"))
+                return
+        f = img.fmt
+        if not img.fits():
+            self._print("\n" + self._c("red", "Image is too small for %s" % f.name))
+            return
+        files = img.files()
+        if rest and rest[0].upper() == "GET":
+            self._image_get(img, files, rest[1:])
+            return
+        self._print("\nImage %s: %s, %d files" % (os.path.basename(path), f.name, len(files)))
+        for user in sorted({x.user for x in files}):
+            self._print("\nUser %d:" % user)
+            col = 0
+            for x in sorted((x for x in files if x.user == user), key=lambda x: x.name):
+                self._print("%s%-12s%4dK%s" % ("\n  " if col == 0 else "  ", x.name,
+                                              -(-x.size // 1024), "*" if "R" in x.attrs else " "))
+                col = (col + 1) % 3
+        self._print("\n(* = read-only.  IMAGE %s GET [n:]pattern [dest] copies files out.)" % args[0])
+
+    def _image_get(self, img, files, args):
+        if not args:
+            self._print("\n" + self._c("red", "GET what?  GET [n:]pattern [drive[user]:]"))
+            return
+        user, pat = 0, args[0]
+        m = re.match(r"^(\d{1,2}):(.*)$", pat)
+        if m:
+            user, pat = int(m.group(1)), m.group(2)
+        pb = self._parse_fcb(pat.upper())[1:]
+        dm = self._SPEC_RE.match(args[1] if len(args) > 1 else "")
+        ddir, dl = self._spec_dir(dm.group(1), int(dm.group(2)) if dm.group(2) else None)
+        if ddir is None:
+            self._print("\n" + self._c("red", "NO DRIVE OR USER AREA %s:" % dl))
+            return
+        done = 0
+        for x in files:
+            if x.user != user:
+                continue
+            nm, _, ext = x.name.partition(".")
+            fn = (nm.ljust(8) + ext.ljust(3)).encode("latin1")
+            if not all(p == 0x3F or p == c for p, c in zip(pb, fn)):
+                continue
+            if not done:
+                os.makedirs(ddir, exist_ok=True)
+            host = x.name.lower()
+            target = os.path.join(ddir, host)
+            for existing in os.listdir(ddir):
+                if existing.lower() == host:
+                    target = os.path.join(ddir, existing)
+            with open(target, "wb") as out:
+                out.write(img.read(x))
+            self._print("\n%-12s %6d bytes -> %s:" % (x.name, x.size, dl))
+            done += 1
+        self._print("\n%d file%s copied from user %d" % (done, "" if done == 1 else "s", user)
+                    if done else "\n" + self._c("red", "NO FILE"))
+
     # ------------------------------------------------------------------ VIEW
     def _ccp_view(self, path, name):
         """Pager for files of any size: the file is memory-mapped and only an array of
@@ -1723,6 +1825,11 @@ class CPM:
         "TYPE": ("TYPE file", "Show a text file on the screen.   TYPE READ.ME"),
         "TIME": ("TIME [ON|OFF]", "Show timing after every program run: real time here, instructions,\n"
                  "T-states and the time a 4 MHz Z80 would need. Also --time on the command line."),
+        "IMAGE": ("IMAGE file [format[:slice]] [GET [n:]pattern [dest]]",
+                  "List the files of a raw CP/M disk image (an .img of a floppy or a RomWBW hard disk\n"
+                  "slice, read only), or copy them out into the current or a given drive and user.\n"
+                  "The format is guessed unless named (hd1k:2 = slice 2).  IMAGE ? lists the formats;\n"
+                  "a cpmtools DISKDEFS file in the folder adds more.   IMAGE RC.IMG GET 0:*.COM B3:"),
         "PLAY": ("PLAY file [fps|baud]", "Show an ANSI/terminal stream (BBS art, ANSI animations such as Bad Apple).\n"
                  "A number up to 240 is frames per second (frames start at ESC[H); a larger one\n"
                  "is a modem speed such as 9600.  Default: 30 fps for animations, else 9600 baud.\n"
@@ -1780,6 +1887,7 @@ class CPM:
             "\n  TIME [ON|OFF]   show run timing       cmd ; cmd      several commands"
             "\n  COPY src [dst]  copy files (HELP COPY)  VIEW file    page through a file of any size"
             "\n  KEYMAP [mode]   cursor key codes      PLAY file [fps] show an ANSI stream/animation"
+            "\n  IMAGE file ...  list/extract files of a CP/M disk image"
             "\n  HELP [command]  this help (or ?)      EXIT           leave (BYE, QUIT)"
             "\n"
             "\nAnything else runs NAME.COM:  MBASIC   DUMP FILE.TXT   B:PROG"
@@ -1903,6 +2011,8 @@ class CPM:
             else:
                 self.timing = not self.timing
             self._print("\nTiming %s" % ("ON" if self.timing else "OFF"))
+        elif cmd == "IMAGE":
+            self._ccp_image(text.strip().split()[1:])          # file names keep their case
         elif cmd == "PLAY" and args:
             self._ccp_play(args)
         elif cmd == "KEYMAP":

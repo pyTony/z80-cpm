@@ -353,6 +353,110 @@ class FastCoreTests(unittest.TestCase):
         self.assertEqual(c.tstates, 3 * 4 + 10)
 
 
+class DiskImageTests(unittest.TestCase):
+    @staticmethod
+    def build(fmt, files, deleted=()):
+        """A raw image with `files` ({(user, "NAME.EXT"): bytes}) laid out by the CP/M rules,
+        written independently of diskimg.py (sectors in physical order via fmt's skew table)."""
+        import diskimg
+        img = bytearray(b"\xe5" * (fmt.offset + fmt.size))
+        tab = diskimg.Image(bytes(1), fmt).skewtab
+        def put_block(n, data):
+            data = data.ljust(fmt.blocksize, b"\x1a")
+            per = fmt.blocksize // fmt.seclen
+            for i in range(per):
+                lsec = fmt.boottrk * fmt.sectrk + n * per + i
+                trk, sec = divmod(lsec, fmt.sectrk)
+                pos = fmt.offset + (trk * fmt.sectrk + tab[sec]) * fmt.seclen
+                img[pos:pos + fmt.seclen] = data[i * fmt.seclen:(i + 1) * fmt.seclen]
+        dirblocks = -(-fmt.maxdir * 32 // fmt.blocksize)
+        for b in range(dirblocks):
+            put_block(b, b"\xe5" * fmt.blocksize)
+        ptr16 = fmt.dsm >= 256
+        exm = max(1, (8 if ptr16 else 16) * fmt.blocksize // 16384) - 1
+        nextblk, entries = dirblocks, []
+        for (user, name), data in files.items():
+            records = -(-len(data) // 128)
+            data = data.ljust(records * 128, b"\x1a")
+            nb = -(-len(data) // fmt.blocksize)
+            blocks = list(range(nextblk, nextblk + nb))
+            nextblk += nb
+            for i, b in enumerate(blocks):
+                put_block(b, data[i * fmt.blocksize:(i + 1) * fmt.blocksize])
+            nm, _, ext = name.partition(".")
+            per_entry = (8 if ptr16 else 16)
+            for n in range(max(1, -(-nb // per_entry))):
+                chunk = blocks[n * per_entry:(n + 1) * per_entry]
+                next = -(-records // 128)
+                last = min(next - 1, n * (exm + 1) + exm)
+                rc = 128 if last < next - 1 else records - last * 128
+                e = bytearray(32)
+                e[0] = user
+                e[1:12] = (nm.ljust(8) + ext.ljust(3)).encode()
+                e[12], e[14], e[15] = last & 31, last >> 5, rc
+                for j, b in enumerate(chunk):
+                    if ptr16:
+                        e[16 + 2 * j], e[17 + 2 * j] = b & 255, b >> 8
+                    else:
+                        e[16 + j] = b
+                entries.append(bytes(e))
+        for u, nm in deleted:
+            e = bytearray(32); e[0] = 0xE5; e[1:12] = nm.ljust(11).encode(); entries.append(bytes(e))
+        raw = b"".join(entries).ljust(fmt.maxdir * 32, b"\xe5")
+        for b in range(dirblocks):
+            put_block(b, raw[b * fmt.blocksize:(b + 1) * fmt.blocksize])
+        return bytes(img)
+
+    def test_ibm3740_skew_table(self):
+        import diskimg
+        img = diskimg.Image(bytes(1), diskimg.BUILTIN["ibm-3740"])
+        want = [x - 1 for x in (1, 7, 13, 19, 25, 5, 11, 17, 23, 3, 9, 15, 21,
+                                2, 8, 14, 20, 26, 6, 12, 18, 24, 4, 10, 16, 22)]
+        self.assertEqual(img.skewtab, want)
+
+    def _roundtrip(self, fmt):
+        import diskimg
+        big = bytes((i * 7) % 251 for i in range(50000))          # several extents
+        files = {(0, "HELLO.TXT"): b"hello\r\n", (3, "BIG.DAT"): big, (0, "EMPTYISH.COM"): b"x" * 128}
+        data = self.build(fmt, files, deleted=[(0, "GONE.TXT")])
+        img = diskimg.Image(data, fmt)
+        self.assertEqual(img.sane()[1], 0)
+        got = {(f.user, f.name): img.read(f) for f in img.files()}
+        self.assertEqual(sorted(got), sorted(files))
+        self.assertEqual(got[(0, "HELLO.TXT")], b"hello\r\n".ljust(128, b"\x1a"))
+        self.assertEqual(got[(3, "BIG.DAT")][:50000], big)
+        self.assertEqual(len(got[(3, "BIG.DAT")]), -(-50000 // 128) * 128)
+        self.assertEqual(got[(0, "EMPTYISH.COM")], b"x" * 128)
+
+    def test_image_8bit_pointers_skewed(self):
+        import diskimg
+        self._roundtrip(diskimg.Format("t8", 128, 77, 26, 1024, 64, skew=6, boottrk=2))
+
+    def test_image_16bit_pointers_and_offset(self):
+        import diskimg
+        self._roundtrip(diskimg.Format("t16", 512, 300, 16, 4096, 128, 0, 2, offset=1 << 20))
+
+    def test_detect_romwbw_images(self):
+        import diskimg
+        from dataclasses import replace
+        files = {(0, "A.COM"): b"\xc3\x00\x01" * 100}
+        hd1k = diskimg.BUILTIN["wbw_hd1k"]
+        for off in (0, 1 << 20):                      # a bare slice, and one behind the 1 MB prefix
+            data = self.build(replace(hd1k, offset=off, slice_prefix=0), files)
+            img = diskimg.detect(data)
+            self.assertIsNotNone(img, off)
+            self.assertEqual(img.fmt.name, "wbw_hd1k")
+            self.assertEqual([f.name for f in img.files()], ["A.COM"])
+        self.assertIsNone(diskimg.detect(bytes(100000)))
+
+    def test_parse_diskdefs(self):
+        import diskimg
+        defs = diskimg.parse_diskdefs("diskdef x\n seclen 512\n tracks 10\n sectrk 8\n"
+                                      " blocksize 2048\n maxdir 64\n boottrk 1\n offset 3T\nend\n")
+        self.assertEqual(defs["x"].offset, 3 * 8 * 512)
+        self.assertEqual(defs["x"].dsm, 9 * 8 * 512 // 2048 - 1)
+
+
 class CpmTests(unittest.TestCase):
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
@@ -482,6 +586,28 @@ class CpmTests(unittest.TestCase):
         cpm._ccp_command("KEYMAP BBC3")
         cpm._set_keymap("EDIT.COM", b"")
         self.assertEqual(cpm.console.keymap, "bbc3")
+
+    def test_image_command(self):
+        import diskimg
+        os.makedirs(os.path.join(self.tmp, "0"), exist_ok=True)
+        files = {(0, "HELLO.TXT"): b"hello\r\n", (0, "OTHER.DAT"): b"zz", (2, "USER2.TXT"): b"two"}
+        data = DiskImageTests.build(diskimg.BUILTIN["ibm-3740"], files)
+        with open(os.path.join(self.tmp, "0", "Disk.IMG"), "wb") as f:
+            f.write(data)
+        cpm, out = make_cpm(self.tmp)
+        cpm._ccp_command("IMAGE disk.img")
+        listing = out.getvalue()
+        self.assertIn("HELLO.TXT", listing)
+        self.assertIn("USER2.TXT", listing)
+        cpm._ccp_command("IMAGE Disk.IMG IBM-3740 GET *.TXT")
+        with open(os.path.join(self.tmp, "0", "hello.txt"), "rb") as f:
+            self.assertEqual(f.read(), b"hello\r\n".ljust(128, b"\x1a"))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "0", "other.dat")))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "0", "user2.txt")))
+        cpm._ccp_command("IMAGE disk.img GET 2:USER2.TXT")
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "0", "user2.txt")))
+        cpm._ccp_command("IMAGE ?")
+        self.assertIn("wbw_hd1k", out.getvalue())
 
     def test_copy_command(self):
         for d in ("A", "B"):

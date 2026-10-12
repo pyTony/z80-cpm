@@ -56,6 +56,11 @@ letters (`B:`), it has some ZCPR-style extras (see `HELP name`):
   characters (the terminal needs a UTF-8 font with block glyphs). Baud-rate streams are drawn
   through an internal 80x25 screen with absolute cursor moves, so the terminal width does not
   matter; `RAW` sends the bytes as they are.
+* `IMAGE file [format[:slice]] [GET [n:]pattern [dest]]` - list or copy files out of a raw CP/M
+  disk image (read only): 8" floppies, the RomWBW floppy and hard disk formats
+  (`hd1k:2` = slice 2, found behind the 1 MB prefix of combined images) and anything a
+  cpmtools `diskdefs` file in the folder describes. `IMAGE ?` lists the formats; without one
+  it is guessed from the directory. `IMAGE rc.img GET 0:*.COM B3:` copies user 0's COM files to B3:.
 * `cmd1 ; cmd2` - several commands on one line; lines starting with `#` are comments.
 * Startup file - `--startup FILE`, or `STARTUP.CPM` on A:0, run when the prompt starts.
 * `COPY src [dst]` - copy files; wildcards, a destination drive and user area (`B3:`), or a
@@ -65,6 +70,21 @@ letters (`B:`), it has some ZCPR-style extras (see `HELP name`):
 * `TIME [ON|OFF]` - after each program, real time, instructions, T-states and the time
   a 4 MHz Z80 would need (time spent waiting for keys is left out).
 * A program that selects other drives (such as `STAT`) does not change the prompt drive.
+
+## Building C programs (BDS C 1.6)
+
+With the plain CP/M 2.2 set (`CC.COM`, `CC2.COM`, `CLINK.COM`, `C.CCC`, `DEFF.CRL`,
+`DEFF2.CRL`, `STDIO.H`) in the current drive and user area:
+
+```
+CC file          (compiles file.C to file.CRL)
+CLINK file       (links file.CRL to file.COM)
+```
+
+All of these must be in the *same* drive and user area as the source, and user areas are
+selected with `USER n` (a drive prefix such as `C1:` does not select one; only `COPY` takes it).
+Files inside an `.LBR` library can be taken out with `LBREXT lib name U` (the library may store
+them under a crunched name such as `STDIO.HZ`). `int` is 16-bit and there is no floating point.
 
 ## RunCPM extensions
 
