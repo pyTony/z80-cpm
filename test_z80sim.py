@@ -5,6 +5,7 @@ import unittest
 
 from z80sim import Z80, Z180, SF, ZF, HF, PF, NF, CF
 from cpm import CPM, Console, BDOS_ENTRY
+from z80dis import disasm
 
 
 def run(code, steps=100000, setup=None):
@@ -120,6 +121,57 @@ class _SlowZ80(Z80):
     """Overriding rd disables the fast handlers, so run_fast uses plain step()."""
     def rd(self, addr):
         return self.mem[addr & 0xFFFF]
+
+
+class DisasmTests(unittest.TestCase):
+    @staticmethod
+    def dis(bs, z180=False, addr=0x100):
+        m = bytes(bs) + bytes(8)
+        return disasm(lambda a: m[a - addr] if 0 <= a - addr < len(m) else 0, addr, z180)
+
+    def test_known_forms(self):
+        cases = [([0x18, 0xFE], 2, "JR 0100h"), ([0xDD, 0x7E, 0x05], 3, "LD A,(IX+05h)"),
+                 ([0xDD, 0x36, 0xFB, 0x0A], 4, "LD (IX-05h),0Ah"),
+                 ([0xFD, 0xCB, 0x02, 0x06], 4, "RLC (IY+02h)"),
+                 ([0xDD, 0xCB, 0xFF, 0x00], 4, "RLC (IX-01h),B"),
+                 ([0xDD, 0x66, 0x01], 3, "LD H,(IX+01h)"), ([0xDD, 0x64], 2, "LD IXH,IXH"),
+                 ([0xED, 0xB0], 2, "LDIR"), ([0xED, 0x43, 0x34, 0x12], 4, "LD (1234h),BC"),
+                 ([0xC3, 0xAB, 0x00], 3, "JP 00ABh"), ([0xDD, 0xE9], 2, "JP (IX)"),
+                 ([0xCB, 0x7E], 2, "BIT 7,(HL)"), ([0xF7], 1, "RST 30h"),
+                 ([0xD3, 0xFE], 2, "OUT (0FEh),A"), ([0xEB], 1, "EX DE,HL"),
+                 ([0xED, 0x56], 2, "IM 1"), ([0x10, 0x00], 2, "DJNZ 0102h")]
+        for bs, n, text in cases:
+            self.assertEqual(self.dis(bs), (n, text), bs)
+
+    def test_z180_only_with_flag(self):
+        self.assertEqual(self.dis([0xED, 0x4C], z180=True), (2, "MLT BC"))
+        self.assertEqual(self.dis([0xED, 0x4C]), (2, "NEG"))      # undocumented NEG copy on a Z80
+        self.assertEqual(self.dis([0xED, 0x38, 0x12], z180=True), (3, "IN0 A,(12h)"))
+        self.assertEqual(self.dis([0xED, 0x74, 0x0F], z180=True), (3, "TSTIO 0Fh"))
+
+    def test_lengths_match_the_simulator(self):
+        branches = ("JP", "JR", "DJNZ", "CALL", "RET", "RST", "HALT", "SLP")
+        repeats = ("INIR", "INDR", "OTIR", "OTDR", "OTIMR", "OTDMR")
+        for z180, cls in ((False, Z80), (True, Z180)):
+            cpu = cls()
+            seqs = []
+            for op in range(256):
+                seqs.append([op])
+                for pre in (0xCB, 0xED, 0xDD, 0xFD):
+                    seqs.append([pre, op])
+                for pre in (0xDD, 0xFD):
+                    seqs.append([pre, 0xCB, 0x05, op])
+            for s in seqs:
+                cpu.reset()
+                cpu.mem[:] = bytes(65536)
+                cpu.mem[0x4000:0x4008] = bytes(s) + bytes([0x12, 0x34, 0x56, 0x78])[:8 - len(s)]
+                cpu.pc, cpu.sp, cpu.hl, cpu.ix, cpu.iy, cpu.bc = 0x4000, 0x8000, 0x5000, 0x5000, 0x5000, 1
+                n, text = disasm(lambda a: cpu.mem[a], 0x4000, z180)
+                word = text.split()[0]
+                if word in branches or word in repeats or text.startswith("DB") or text in ("RETN", "RETI"):
+                    continue
+                cpu.step()
+                self.assertEqual(cpu.pc - 0x4000, n, (bytes(s).hex(), text, z180))
 
 
 class Z180Tests(unittest.TestCase):
@@ -664,6 +716,20 @@ class CpmTests(unittest.TestCase):
         cpm._ccp_command("Z3 OFF")
         cpm.load(prog)
         self.assertEqual(cpm.cpu.mem[6], BDOS_ENTRY & 0xFF)
+
+    def test_debug_monitor(self):
+        cpm, out = make_cpm(self.tmp, stdin=(
+            "E 100 21 34 12 CD 10 01 76\nE 110 3E 41 5F 0E 02 CD 05 00 C9\n"
+            "L 100 3\nB 103\nG\nT 2\nP\nP\nR BC 0102\nD 100 10f\nQ\n"))
+        cpm._ccp_debug_empty()
+        text = out.getvalue()
+        self.assertIn("LD HL,1234h", text)
+        self.assertIn("CALL 0110h", text)
+        self.assertIn("Breakpoint at 0103", text)
+        self.assertIn("LD A,41h", text)
+        self.assertIn("HL=1234", text)
+        self.assertIn("BC=0102", text)
+        self.assertIn("21 34 12 CD 10 01 76", text)
 
     def test_copy_command(self):
         for d in ("A", "B"):

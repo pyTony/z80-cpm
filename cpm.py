@@ -35,6 +35,7 @@ import shutil
 import sys
 
 import z3env
+from debugger import Debugger
 from z80sim import Z80, Z180
 
 TPA = 0x0100
@@ -1406,6 +1407,30 @@ class CPM:
                 self._print("\n" + self._c("dim", "Not shown (name is not 8.3 or has no name): " +
                                              ", ".join(bad[:8]) + (" ..." if len(bad) > 8 else "")))
 
+    def step_one(self):
+        """One instruction for the debugger; BDOS and BIOS entries run as part of it."""
+        cpu = self.cpu
+        while not self.exited:
+            pc = cpu.pc
+            if pc == BDOS_ENTRY:
+                self.bdos()
+            elif BIOS_IMPL <= pc < BIOS_END:
+                self.bios(pc - BIOS_IMPL)
+            else:
+                break
+        if self.exited:
+            return
+        cpu.step()
+        while not self.exited:
+            pc = cpu.pc
+            if pc == BDOS_ENTRY:
+                self.bdos()
+            elif BIOS_IMPL <= pc < BIOS_END:
+                self.bios(pc - BIOS_IMPL)
+            else:
+                break
+        self.console.flush()
+
     def run_timed(self):
         """run(), then report host time, instruction count and the time a real
         4 MHz Z80 would have needed (when self.timing is on)."""
@@ -1428,7 +1453,7 @@ class CPM:
             self.console.flush()
         return n
 
-    def _ccp_run(self, cmd, args):
+    def _ccp_run(self, cmd, args, debug=False):
         if "." not in cmd.split(":")[-1]:
             cmd += ".COM"
         self._make_fcb(0x5C, cmd)
@@ -1461,10 +1486,21 @@ class CPM:
         keymap = self.console.keymap
         self._set_keymap(cmd, program)
         try:
-            self.run_timed()
+            if debug:
+                Debugger(self).loop()
+            else:
+                self.run_timed()
         finally:
             self.console.keymap = keymap
             self._set_drive(drive)
+
+    def _ccp_debug_empty(self):
+        self._init_memory()
+        self.exited = False
+        self.cpu.reset()
+        self.cpu.pc = TPA
+        self.cpu.sp = BDOS_BASE
+        Debugger(self).loop()
 
     _FRAME_RE = re.compile(rb"\x1b\[(?:1;1)?H|\x0c")
 
@@ -1908,6 +1944,10 @@ class CPM:
                "256-byte environment descriptor with a path, wheel byte, message buffers and an\n"
                "ANSI terminal capability block, below a lowered BDOS address.  There is no ZCPR3\n"
                "command processor, so each tool is started on its own.  Also --z3."),
+        "DEBUG": ("DEBUG [file [args]]", "Monitor/debugger: load a program and look at it before it runs.  L disassemble\n"
+                  "(Z80, Z180 with --cpu z180), D dump, R registers (R HL 1234 sets one), T [n] trace n\n"
+                  "instructions, P step over CALL/loops, G go, B/BC breakpoints, E/F enter/fill bytes,\n"
+                  "H help, Q leave.  Numbers are hex.  DEBUG alone gives an empty memory to E-nter code in."),
         "KEYMAP": ("KEYMAP [AUTO|WS|BBC|BBC3]", "Codes sent by the cursor keys, Home/End, Delete and Insert.  WS: WordStar\n"
                    "(^E ^X ^S ^D ...) for TE, WordStar, ...  BBC: the keys BBC BASIC expects\n"
                    "(^G ^O ^J ^L, ^F ^N, ^R, ^Q).  BBC3: BBC BASIC 3.00 (no cursor editing; Backspace\n"
@@ -1962,6 +2002,7 @@ class CPM:
             "\n  COPY src [dst]  copy files (HELP COPY)  VIEW file    page through a file of any size"
             "\n  KEYMAP [mode]   cursor key codes      PLAY file [fps] show an ANSI stream/animation"
             "\n  IMAGE file ...  list/extract files of a CP/M disk image"
+            "\n  DEBUG [file]    disassemble, trace, breakpoints   Z3 [ON|OFF]  ZCPR3 environment"
             "\n  HELP [command]  this help (or ?)      EXIT           leave (BYE, QUIT)"
             "\n"
             "\nAnything else runs NAME.COM:  MBASIC   DUMP FILE.TXT   B:PROG"
@@ -2102,6 +2143,8 @@ class CPM:
             self._print("\nZCPR3 environment: %s" % ("ON" if self.z3 else "OFF"))
             if self.z3:
                 self._print("\n  " + z3env.describe())
+        elif cmd in ("DEBUG", "DBG"):
+            self._ccp_run(args[0], args[1:], debug=True) if args else self._ccp_debug_empty()
         elif cmd == "PATH":
             self._ccp_path(args)
         elif cmd == "ALIAS":
