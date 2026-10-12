@@ -4,7 +4,7 @@ import tempfile
 import unittest
 
 from z80sim import Z80, Z180, SF, ZF, HF, PF, NF, CF
-from cpm import CPM, Console
+from cpm import CPM, Console, BDOS_ENTRY
 
 
 def run(code, steps=100000, setup=None):
@@ -608,6 +608,62 @@ class CpmTests(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(self.tmp, "0", "user2.txt")))
         cpm._ccp_command("IMAGE ?")
         self.assertIn("wbw_hd1k", out.getvalue())
+
+    def test_view_hex_dump(self):
+        os.makedirs(os.path.join(self.tmp, "0"), exist_ok=True)
+        data = bytes(range(256)) + b"Hello, Z3ENV\x1a tail"
+        path = os.path.join(self.tmp, "0", "BIN.DAT")
+        with open(path, "wb") as f:
+            f.write(data)
+        cpm, out = make_cpm(self.tmp, stdin="q")
+        cpm._ccp_view(path, "BIN.DAT")
+        text = out.getvalue()
+        self.assertIn("00000000  00 01 02 03 04 05 06 07  08 09 0a 0b 0c 0d 0e 0f", text)
+        self.assertIn("|Hello, Z3ENV.", text)               # past the ^Z: all bytes shown
+        tpath = os.path.join(self.tmp, "0", "T.TXT")
+        with open(tpath, "wb") as f:
+            f.write(b"line one\r\nline two\r\n")
+        cpm, out = make_cpm(self.tmp, stdin="q")
+        cpm._ccp_view(tpath, "T.TXT")
+        self.assertIn("line two", out.getvalue())
+        self.assertNotIn("00000000", out.getvalue())
+        cpm, out = make_cpm(self.tmp, stdin="xq")           # x toggles to hex
+        cpm._ccp_view(tpath, "T.TXT")
+        self.assertIn("00000000  6c 69 6e 65 20 6f 6e 65", out.getvalue())
+
+    def test_z3_environment(self):
+        import z3env
+        # type 1 ZCPR3 program: JP 010Ch, 'Z3ENV', type, ENV address 0, then
+        # LD HL,(0109h) ; LD (0200h),HL ; RET
+        prog = (bytes([0xC3, 0x0C, 0x01]) + b"Z3ENV" + bytes([1, 0, 0, 0x00]) +
+                bytes([0x2A, 0x09, 0x01, 0x22, 0x00, 0x02, 0xC9]))
+        cpm, out = make_cpm(self.tmp)
+        cpm.load(prog)                               # not in Z3 mode: untouched
+        self.assertEqual(cpm.cpu.mem[0x0109:0x010B], b"\x00\x00")
+        self.assertEqual(cpm.cpu.mem[6], BDOS_ENTRY & 0xFF)
+        cpm._ccp_command("Z3 ON")
+        self.assertIn("Z3ENV FB00", out.getvalue())
+        cpm.load(prog)
+        mem = cpm.cpu.mem
+        self.assertEqual(cpm.cpu.hl, z3env.ENV)
+        self.assertEqual(bytes(mem[z3env.ENV + 3:z3env.ENV + 8]), b"Z3ENV")
+        self.assertEqual(mem[z3env.ENV + 0x1B] | mem[z3env.ENV + 0x1C] << 8, z3env.ENV)
+        self.assertEqual(mem[7], z3env.BDOS >> 8)    # BDOS (top of TPA) lowered
+        self.assertEqual(mem[z3env.WHEEL], 0xFF)
+        self.assertEqual(bytes(mem[z3env.EXPATH:z3env.EXPATH + 5]), bytes([1, 15, 1, 0, 0]))
+        self.assertEqual(bytes(mem[z3env.ENV + 0x80:z3env.ENV + 0x84]), b"ANSI")
+        cpm.run()
+        self.assertEqual(mem[0x0200] | mem[0x0201] << 8, z3env.ENV)
+        mem[z3env.WHEEL] = 0                         # a tool clears the wheel byte ...
+        cpm.load(prog)                               # ... and the next program sees it
+        self.assertEqual(cpm.cpu.mem[z3env.WHEEL], 0)
+        # BDOS calls still work through the lowered entry point
+        cpm.load(bytes([0x0E, 0x02, 0x1E, 0x41, 0xCD, 0x05, 0x00, 0xC9]))
+        cpm.run()
+        self.assertIn("A", out.getvalue())
+        cpm._ccp_command("Z3 OFF")
+        cpm.load(prog)
+        self.assertEqual(cpm.cpu.mem[6], BDOS_ENTRY & 0xFF)
 
     def test_copy_command(self):
         for d in ("A", "B"):

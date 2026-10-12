@@ -66,7 +66,15 @@ letters (`B:`), it has some ZCPR-style extras (see `HELP name`):
 * `COPY src [dst]` - copy files; wildcards, a destination drive and user area (`B3:`), or a
   name/pattern (`COPY *.TXT *.BAK`). Existing files are replaced.
 * `VIEW file` - pager for files of any size (memory-mapped, so no 64K limit): Space/b or
-  PgDn/PgUp, Enter/arrows, Home/End or g/G, `/text` search with n/N, q or Esc to quit.
+  PgDn/PgUp, Enter/arrows, Home/End or g/G, `/text` search with n/N, q or Esc to quit. Binary files open as a hex dump
+  (`x` switches hex/text, `VIEW file HEX` forces it).
+* `Z3 [ON|OFF]` (or `--z3`) - a ZCPR3 environment for individual Z-System tools such as
+  `Z3LOC`, `ZSHOW` and `SETPATH` (`PATH.COM`; the built-in `PATH` command is a different
+  thing): the 256-byte environment descriptor, path, wheel byte, message buffers and an ANSI
+  terminal-capability block sit below a lowered BDOS address, and programs with the `Z3ENV`
+  header are told where it is. Changes (for example a new path) last from program to program.
+  There is no ZCPR3 command processor, so NZ-COM and tools that need the CCP, RCP or FCP
+  do not work.
 * `TIME [ON|OFF]` - after each program, real time, instructions, T-states and the time
   a 4 MHz Z80 would need (time spent waiting for keys is left out).
 * A program that selects other drives (such as `STAT`) does not change the prompt drive.

@@ -34,6 +34,7 @@ import re
 import shutil
 import sys
 
+import z3env
 from z80sim import Z80, Z180
 
 TPA = 0x0100
@@ -666,6 +667,8 @@ class CPM:
         self._bls, self._exm = 4096, 1
         self.dma = 0x80
         self.drive = 0           # 0 = A:
+        self.z3 = False           # Z3: ZCPR3 environment (see z3env.py)
+        self._z3_keep = None
         self.keymode = "auto"     # KEYMAP: auto (BBC keys for BBC* programs), ws or bbc
         self.user = 0
         self.exited = False
@@ -697,6 +700,7 @@ class CPM:
             35: self._f_file_size, 36: self._f_set_rand,
             37: lambda de: 0, 40: self._f_write_rand,
             45: lambda de: 0,                           # CP/M 3 set error mode: nothing to do
+            48: lambda de: 0,                           # CP/M 3 flush buffers: nothing is cached
             # RunCPM extensions used by its INFO, LUA, FORMAT, CONSOLE7/8 programs
             230: self._f_console_mask, 249: self._f_make_disk,
             250: lambda de: 0 if sys.platform.startswith("win") else 2,   # host OS
@@ -719,11 +723,27 @@ class CPM:
 
     def _init_memory(self):
         mem = self.cpu.mem
+        keep = None
+        if self.z3 and self._z3_keep is not None:     # path, wheel byte ... survive
+            keep = bytes(mem[z3env.LOW:BDOS_BASE])
         mem[0:0x10000] = bytes(0x10000)
         self._put(0x0000, bytes([0xC3, (BIOS_BASE + 3) & 0xFF, (BIOS_BASE + 3) >> 8]))
         mem[3] = 0x00                                   # IOBYTE
         mem[4] = ((self.user << 4) | self.drive) & 0xFF  # current drive / user
-        self._put(0x0005, bytes([0xC3, BDOS_ENTRY & 0xFF, BDOS_ENTRY >> 8]))
+        bdos = BDOS_ENTRY
+        if self.z3:
+            top = z3env.BDOS
+            if keep is not None:
+                mem[z3env.LOW:BDOS_BASE] = keep
+            else:
+                for a, data in z3env.initial_image(*self._z3_screen()):
+                    self._put(a, data)
+            self._z3_keep = True
+            for i in range(top, top + 0x100):
+                mem[i] = 0xC9
+            self._put(top + 6, bytes([0xC3, BDOS_ENTRY & 0xFF, BDOS_ENTRY >> 8]))
+            bdos = top + 6                              # page 0 says the BDOS is lower
+        self._put(0x0005, bytes([0xC3, bdos & 0xFF, bdos >> 8]))
         self._put(0x0038, bytes([0xC9]))                # RST 7: just RET
         for i in range(BDOS_BASE, BDOS_BASE + 0x100):
             mem[i] = 0xC9                               # BDOS area: RETs
@@ -732,6 +752,23 @@ class CPM:
             self._put(BIOS_BASE + 3 * i, bytes([0xC3, impl & 0xFF, impl >> 8]))
             mem[impl] = 0xC9                            # trapped, then RET
         self._refresh_disk_params()
+
+    def _z3_screen(self):
+        cols, rows = shutil.get_terminal_size((80, 24))
+        return (min(cols, 255), min(rows, 255))
+
+    def _z3_patch(self, program):
+        """ZCPR3 tools carry 'Z3ENV' at 0103h; the command processor stores the address
+        of the environment descriptor at 0109h when it loads them."""
+        mem = self.cpu.mem
+        if program[3:8] != b"Z3ENV" or len(program) < 0x0D:
+            return
+        kind = program[8]
+        if kind in (1, 3) and (kind == 1 or program[0x0B:0x0D] == b"\x00\x01"):
+            mem[TPA + 9] = z3env.ENV & 0xFF
+            mem[TPA + 10] = z3env.ENV >> 8
+        else:
+            self._print("\n(ZCPR3 program of type %d is not supported)" % kind)
 
     @staticmethod
     def _parse_fcb(spec):
@@ -756,6 +793,8 @@ class CPM:
         self.exited = False
         cpu = self.cpu
         cpu.mem[addr:addr + len(program)] = program
+        if self.z3 and addr == TPA:
+            self._z3_patch(program)
         tail = (" " + " ".join(args)).upper()[:127] if args else ""
         cpu.mem[0x80] = len(tail)
         self._put(0x81, tail.encode("latin1", "replace"))
@@ -767,7 +806,9 @@ class CPM:
         cpu.r[7] = 0
         cpu.f = 0
         cpu.pc = addr
-        cpu.sp = BDOS_BASE
+        cpu.sp = z3env.BDOS if self.z3 else BDOS_BASE
+        if self.z3 and program[3:8] == b"Z3ENV":
+            cpu.hl = z3env.ENV                          # ZCPR3 passes the ENV address in HL too
         cpu._push(0x0000)                               # RET => warm boot
 
     def load_file(self, path, args=()):
@@ -1676,9 +1717,10 @@ class CPM:
                     if done else "\n" + self._c("red", "NO FILE"))
 
     # ------------------------------------------------------------------ VIEW
-    def _ccp_view(self, path, name):
+    def _ccp_view(self, path, name, mode="auto"):
         """Pager for files of any size: the file is memory-mapped and only an array of
-        line starts is kept, so it is not limited by the 64K of CP/M."""
+        line starts is kept, so it is not limited by the 64K of CP/M.  Binary files (and
+        mode "hex") are shown as a hex dump; the x key switches between the two views."""
         import mmap, shutil
         from array import array
         from bisect import bisect_right
@@ -1688,8 +1730,11 @@ class CPM:
             return
         out = self.console
         with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            head = mm[:4096]
+            binary = b"\0" in head or sum(1 for c in head if c < 32 and c not in b"\t\r\n\f\x1a\x1b") * 10 > len(head)
+            hexmode = [mode == "hex" or (mode == "auto" and binary)]
             end = mm.find(b"\x1a")
-            end = size if end < 0 else end
+            end = size if end < 0 or hexmode[0] else end
             starts = array("Q", [0])
             pos = 0
             while pos < end:                      # index in 16 MB blocks, in C speed
@@ -1701,10 +1746,16 @@ class CPM:
                 pos += sum(map(len, parts)) + len(parts) - 1
             if starts[-1] >= end:                 # text ends with a newline
                 starts.pop()
-            n = len(starts)
+            ntext = len(starts)
+            nhex = (size + 15) // 16
 
             def line(i):
-                e = starts[i + 1] if i + 1 < n else end
+                if hexmode[0]:
+                    raw = mm[i * 16:i * 16 + 16]
+                    hx = " ".join("%02x" % c for c in raw[:8]) + "  " + " ".join("%02x" % c for c in raw[8:])
+                    asc = "".join(chr(c) if 32 <= c < 127 else "." for c in raw)
+                    return ("%08x  %-48s |%s|" % (i * 16, hx, asc)).encode("latin-1")
+                e = starts[i + 1] if i + 1 < ntext else end
                 return mm[starts[i]:e].rstrip(b"\r\n")
 
             def emit(text):
@@ -1731,6 +1782,7 @@ class CPM:
 
             top, col, last, msg = 0, 0, "", ""
             while True:
+                n = nhex if hexmode[0] else ntext
                 cols, rows = shutil.get_terminal_size((80, 24))
                 page = max(1, rows - 1)
                 top = max(0, min(top, max(0, n - page)))
@@ -1740,7 +1792,7 @@ class CPM:
                     buf.append((cells(line(i), col, cols) if i < n else "~") + "\x1b[K\r\n")
                 shown = min(n, top + page)
                 pct = 100 * shown // n
-                stat = " %s  lines %d-%d of %d  %d%%  %s" % (name, top + 1, shown, n, pct, msg)
+                stat = " %s  %s %d-%d of %d  %d%%  %s" % (name, "rows" if hexmode[0] else "lines", top + 1, shown, n, pct, msg)
                 buf.append("\x1b[7m" + stat[:cols - 1].ljust(cols - 1) + "\x1b[0m")
                 emit("".join(buf))
                 out.flush()
@@ -1766,6 +1818,13 @@ class CPM:
                         top, col = 0, 0
                     elif k2 in (0x04, 0x44, 0x64):
                         top = n
+                elif k in (0x78, 0x58):                              # x: text <-> hex view
+                    if hexmode[0]:
+                        top = max(0, bisect_right(starts, top * 16) - 1)
+                    else:
+                        top = starts[min(top, ntext - 1)] // 16
+                    hexmode[0] = not hexmode[0]
+                    col = 0
                 elif k in (0x67,):                                   # g
                     top, col = 0, 0
                 elif k == 0x47:                                      # G
@@ -1798,11 +1857,21 @@ class CPM:
                     found = None
                     step = -1 if k == 0x4E else 1
                     first = top if k == 0x2F else top + step
-                    for j in range(n):                # wraps round the file
-                        i = (first + step * j) % n
-                        if pat in line(i).lower():
-                            found = i
-                            break
+                    if hexmode[0]:                    # search the bytes, case ignored
+                        rx = re.compile(re.escape(last), re.I)
+                        if step > 0:
+                            m = rx.search(mm, first * 16) or rx.search(mm, 0)
+                            found = m.start() // 16 if m else None
+                        else:
+                            hits = [m.start() // 16 for m in rx.finditer(mm)]
+                            before = [h for h in hits if h < top]
+                            found = before[-1] if before else (hits[-1] if hits else None)
+                    else:
+                        for j in range(n):            # wraps round the file
+                            i = (first + step * j) % n
+                            if pat in line(i).lower():
+                                found = i
+                                break
                     if found is None:
                         msg = "Not found: " + last.decode("latin-1")
                     else:
@@ -1819,9 +1888,10 @@ class CPM:
                  "The destination is a drive (B:), a drive and user area (B3:), a name or a pattern;\n"
                  "with no destination the files go to the current drive and user area (same name =\n"
                  "SAME FILE).  Existing files are replaced.  Several sources need a drive or a pattern."),
-        "VIEW": ("VIEW file", "Page through a file of any size.  Space/b or PgDn/PgUp: page;\n"
+        "VIEW": ("VIEW file [HEX]", "Page through a file of any size.  Space/b or PgDn/PgUp: page;\n"
                  "Enter or Down/Up (j/k): line;  Left/Right: sideways;  g/G or Home/End: start/end;\n"
-                 "/text: search (case ignored), n/N: next/previous;  q or Esc: quit."),
+                 "/text: search (case ignored), n/N: next/previous;  q or Esc: quit.\n"
+                 "Binary files open as a hex dump; x switches hex/text, VIEW file HEX forces hex."),
         "TYPE": ("TYPE file", "Show a text file on the screen.   TYPE READ.ME"),
         "TIME": ("TIME [ON|OFF]", "Show timing after every program run: real time here, instructions,\n"
                  "T-states and the time a 4 MHz Z80 would need. Also --time on the command line."),
@@ -1834,6 +1904,10 @@ class CPM:
                  "A number up to 240 is frames per second (frames start at ESC[H); a larger one\n"
                  "is a modem speed such as 9600.  Default: 30 fps for animations, else 9600 baud.\n"
                  "q or Esc stops.  Start with --charset cp437 for the IBM block characters."),
+        "Z3": ("Z3 [ON|OFF]", "ZCPR3 environment for Z-System tools (Z3LOC, ZSHOW, SETPATH, ...): the\n"
+               "256-byte environment descriptor with a path, wheel byte, message buffers and an\n"
+               "ANSI terminal capability block, below a lowered BDOS address.  There is no ZCPR3\n"
+               "command processor, so each tool is started on its own.  Also --z3."),
         "KEYMAP": ("KEYMAP [AUTO|WS|BBC|BBC3]", "Codes sent by the cursor keys, Home/End, Delete and Insert.  WS: WordStar\n"
                    "(^E ^X ^S ^D ...) for TE, WordStar, ...  BBC: the keys BBC BASIC expects\n"
                    "(^G ^O ^J ^L, ^F ^N, ^R, ^Q).  BBC3: BBC BASIC 3.00 (no cursor editing; Backspace\n"
@@ -1991,7 +2065,8 @@ class CPM:
             elif not self.console._raw:
                 self._ccp_command("TYPE " + args[0])      # no keyboard to page with
             else:
-                self._ccp_view(path, os.path.basename(path))
+                self._ccp_view(path, os.path.basename(path),
+                               "hex" if len(args) > 1 and args[1].upper() == "HEX" else "auto")
         elif cmd == "TYPE" and args:
             self._make_fcb(0x5C, args[0])
             path = self._fcb_path(0x5C)
@@ -2020,6 +2095,13 @@ class CPM:
                 self.keymode = args[0].lower()
             self._print("\nKeymap: %s%s" % (self.keymode.upper(),
                         "  (BBC for programs named BBC*: BBC3 for version 3, else WordStar)" if self.keymode == "auto" else ""))
+        elif cmd == "Z3":
+            if args and args[0].upper() in ("ON", "OFF"):
+                self.z3 = args[0].upper() == "ON"
+                self._z3_keep = None
+            self._print("\nZCPR3 environment: %s" % ("ON" if self.z3 else "OFF"))
+            if self.z3:
+                self._print("\n  " + z3env.describe())
         elif cmd == "PATH":
             self._ccp_path(args)
         elif cmd == "ALIAS":
@@ -2130,6 +2212,8 @@ def main(argv=None):
                     help="ANSI colour in the built-in prompt, DIR and HELP (auto = on for a terminal)")
     ap.add_argument("--cpu", "-cpu", choices=["z80", "z180"], default="z80",
                     help="z180: also MLT, TST, IN0/OUT0, OTIM/OTDM(R), SLP (no MMU)")
+    ap.add_argument("--z3", "-z3", action="store_true",
+                    help="provide a ZCPR3 environment for Z-System tools (see the Z3 command)")
     ap.add_argument("--time", "-time", action="store_true",
                     help="after each program run print elapsed time, instruction count and "
                          "the equivalent time on a 4 MHz Z80")
@@ -2187,6 +2271,7 @@ def main(argv=None):
               cpu=Z180() if ns.cpu == "z180" else None)
     cpm.drive, cpm.user = start_drive, start_user
     cpm.timing = ns.time
+    cpm.z3 = ns.z3
     cpm.startup = ns.startup
     cpm.color = (ns.color == "on" or
                  (ns.color == "auto" and not os.environ.get("NO_COLOR") and
