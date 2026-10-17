@@ -1144,6 +1144,26 @@ class Z180RuntimeTests(unittest.TestCase):
         self.assertEqual(plain, fast)
 
 
+class CommandSwitchTests(unittest.TestCase):
+    """cpm.py -c "DIR C3:": list another drive and user area without the prompt."""
+
+    def test_dir_user_area(self):
+        import contextlib
+        import cpm as cpm_mod
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        for user, name in (("0", "BAR.COM"), ("3", "FOO.TXT")):
+            os.makedirs(os.path.join(tmp, "C", user))
+            open(os.path.join(tmp, "C", user, name), "w").close()
+        os.makedirs(os.path.join(tmp, "A", "0"))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = cpm_mod.main(["--disk", tmp, "--color", "off", "-c", "DIR C3:; DIR C0:*.COM; DIR C3:*.COM"])
+        self.assertEqual(rc, 0)
+        lines = [l for l in out.getvalue().split("\r\n") if l.strip()]
+        self.assertEqual(lines, ["C: FOO      TXT", "C: BAR      COM", "NO FILE"])
+
+
 class Z180OnZ80Tests(unittest.TestCase):
     """A Z180 instruction run on the Z80 is reported once; the Z180 itself stays quiet."""
 

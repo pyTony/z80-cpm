@@ -1422,7 +1422,17 @@ class CPM:
     def _make_fcb(self, addr, spec):
         self._put(addr, self._parse_fcb(spec) + bytes(24))
 
+    _DU_RE = re.compile(r"^([A-P]?)(\d{1,2}):(.*)$")
+
     def _ccp_dir(self, spec):
+        m = self._DU_RE.match((spec or "").upper())
+        if m and int(m.group(2)) < 16:            # DIR C3: or DIR C3:*.COM - another user area
+            user = self.user
+            self.user = int(m.group(2))
+            try:
+                return self._ccp_dir((m.group(1) + ":" if m.group(1) else "") + m.group(3))
+            finally:
+                self.user = user
         if spec and spec.endswith(":"):          # "DIR B:" lists everything on B:
             spec += "*.*"
         self._make_fcb(0x5C, spec or "*.*")
@@ -2006,7 +2016,8 @@ class CPM:
 
     _HELP = {
         "DIR": ("DIR [spec]", "List files. Wildcards: ? matches one character, * the rest of\n"
-                "the name or type.   DIR   DIR *.COM   DIR B:*.TXT   DIR A*.*"),
+                "the name or type.   DIR   DIR *.COM   DIR B:*.TXT   DIR A*.*\n"
+                "Another user area: DIR C3:   DIR C3:*.COM   DIR 3:   From the host: cpm.py -c \"DIR C3:\""),
         "ERA": ("ERA spec", "Delete files.   ERA OLD.TXT   ERA *.BAK"),
         "REN": ("REN new=old", "Rename a file.   REN NEW.TXT=OLD.TXT"),
         "COPY": ("COPY source [destination]  (also CP)", "Copy files.   COPY A.TXT B:   COPY *.COM B3:   COPY A.TXT B.TXT   COPY *.TXT *.BAK\n"
@@ -2063,7 +2074,7 @@ class CPM:
                  "DRIVE/0, DRIVE/1 ... on the host (a folder 0 turns them on; the others are made\n"
                  "when a file is first written there).  On a drive without them every user area\n"
                  "shows the same files.  The prompt shows it: A0>, A3>"),
-        "d:": ("A: B: ... P:", "Switch the current drive, e.g. B:"),
+        "d:": ("A: B: ... P:  or  B3:", "Switch the current drive, e.g. B:, or drive and user area: B3: (3: keeps the drive)"),
         "HELP": ("HELP [command]  or  ?", "This list, or details about one command.   HELP KEYS"),
         "EXIT": ("EXIT  (also BYE, QUIT)", "Leave the emulator."),
         "RUN": ("NAME [args]", "Any other word runs NAME.COM from the current drive/user,\n"
@@ -2177,7 +2188,14 @@ class CPM:
             finally:
                 self._expanding.discard(words[0])
         cmd, args = words[0], words[1:]
-        if len(cmd) == 2 and cmd[1] == ":" and "A" <= cmd[0] <= "P":
+        m = self._DU_RE.match(cmd)
+        if m and not m.group(3) and int(m.group(2)) < 16:   # B3: or 3: - drive and user at once
+            if m.group(1) and m.group(1) not in self.drives:
+                self._print("\n" + self._c("red", "BDOS Err On %s: Select" % m.group(1)))
+            else:
+                self.user = int(m.group(2))
+                self._set_drive(ord(m.group(1)) - 65 if m.group(1) else self.drive)
+        elif len(cmd) == 2 and cmd[1] == ":" and "A" <= cmd[0] <= "P":
             if cmd[0] in self.drives:
                 self._set_drive(ord(cmd[0]) - 65)
             else:
@@ -2375,6 +2393,8 @@ def main(argv=None):
                     help="z180: also MLT, TST, IN0/OUT0, OTIM/OTDM(R), SLP and the MMU (1 MB)")
     ap.add_argument("--z3", "-z3", action="store_true",
                     help="provide a ZCPR3 environment for Z-System tools (see the Z3 command)")
+    ap.add_argument("--command", "-c", metavar="CMDS",
+                    help="run prompt commands and exit, e.g. -c \"DIR C0:\" (; separates several)")
     ap.add_argument("--time", "-time", action="store_true",
                     help="after each program run print elapsed time, instruction count and "
                          "the equivalent time on a 4 MHz Z80")
@@ -2438,7 +2458,10 @@ def main(argv=None):
                  (ns.color == "auto" and not os.environ.get("NO_COLOR") and
                   hasattr(sys.stdout, "isatty") and sys.stdout.isatty()))
     try:
-        if ns.program:
+        if ns.command is not None:
+            cpm._ccp_line(ns.command)
+            cpm._print("\n")
+        elif ns.program:
             cpm.load_file(ns.program, ns.args)
             sys.stderr.write("[%s]\n" % cpm.cpu_line())     # stderr: program output stays clean
             cpm.run_timed()
