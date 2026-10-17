@@ -4,6 +4,7 @@
     python cc.py hello --disk B3       hello.com -> disks/B/3 (drive B, user 3), run on that disk
     python cc.py hello.c --cpu z80 --no-run --keep
     python cc.py whetstone --full      every compiler, assembler and linker message
+    python cc.py whetstone --cpu z80 -o whet80.com    a Z80 build next to the Z180 one
 
 --cpu z180 (the default) links the Z180 runtime from the z180 folder: multiplies with MLT and
 the z180.h helpers.  Such a program needs a Z180; --cpu z80 builds one for any Z80.  The
@@ -75,7 +76,7 @@ def ensure_packages():
 
 
 def disk_target(spec, disks_dir, name):
-    m = re.fullmatch(r"([A-Pa-p])(\d{0,2})", spec)
+    m = re.fullmatch(r"([A-Pa-p])(\d{0,2}):?", spec)        # B, B3, B: or B3: (as at the CP/M prompt)
     if not m:
         fail("--disk should look like B or B3 (drive, optional user 0-15)")
     drive, user = m.group(1).upper(), int(m.group(2) or 0)
@@ -95,8 +96,9 @@ def disk_target(spec, disks_dir, name):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("file", help="hello, hello.c or hello.com")
+    ap.add_argument("-o", "--output", help="name of the .com (default: the source's name)")
     ap.add_argument("--cpu", choices=["z80", "z180"], default="z180")
-    ap.add_argument("--disk", default="", help="drive (and user) to put the .com on: B or B3")
+    ap.add_argument("--disk", default="", help="drive (and user) to put the .com on: B, B3, B: or B3:")
     ap.add_argument("--disks-dir", default="disks")
     ap.add_argument("--no-run", action="store_true", help="build only")
     ap.add_argument("--keep", action="store_true", help="keep the .mac and .rel files")
@@ -104,7 +106,8 @@ def main(argv=None):
     ns = ap.parse_args(argv)
 
     base = re.sub(r"\.(c|com)$", "", ns.file, flags=re.I)
-    src, asm, rel, com = base + ".c", base + ".mac", base + ".rel", base + ".com"
+    out = re.sub(r"\.com$", "", ns.output, flags=re.I) if ns.output else base
+    src, asm, rel, com = base + ".c", out + ".mac", out + ".rel", out + ".com"
     ensure_packages()
     if not os.path.exists(src):
         say("%s not found, creating a small example." % src, "yellow")
@@ -115,7 +118,7 @@ def main(argv=None):
             os.remove(f)
 
     start = time.perf_counter()
-    tools = Tools(ns.full, base + ".log")
+    tools = Tools(ns.full, out + ".log")
     lib = tools.run("uc80", "-m", "uc80.main", "--print-lib-dir")[-1].strip()
     uc80_args, extra = [], []
     if ns.cpu == "z180":
@@ -150,13 +153,13 @@ def main(argv=None):
 
     cmd = [sys.executable, os.path.join(HERE, "cpm.py"), "--time", "--cpu", ns.cpu]
     if ns.disk:
-        target, drive, user = disk_target(ns.disk, ns.disks_dir, os.path.basename(base))
+        target, drive, user = disk_target(ns.disk, ns.disks_dir, os.path.basename(out))
         os.replace(com, target)
         com = target
         say("Moved to %s (drive %s:, user %d)" % (target, drive, user), "green")
         cmd += ["--disk", ns.disks_dir]
     if not ns.no_run:
-        say("--- running on the emulated %s (Ctrl+] leaves) ---" % ns.cpu.upper(), "cyan")
+        say("--- running (Ctrl+] leaves) ---", "cyan")
         sys.exit(subprocess.run(cmd + [com]).returncode)
 
 
