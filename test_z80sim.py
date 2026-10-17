@@ -955,6 +955,19 @@ class CpmTests(unittest.TestCase):
         self.assertEqual(cpm.bdos_call(22, 0x200), 0)               # make in user 3
         self.assertTrue(os.path.exists(os.path.join(self.tmp, "3", "a.txt")))
 
+    def test_files_outside_user_areas_are_reported(self):
+        os.makedirs(os.path.join(self.tmp, "A", "0"))
+        os.makedirs(os.path.join(self.tmp, "B"))
+        for p in (("A", "LOOSE.TXT"), ("A", "notes.markdown"), ("A", "0", "IN.TXT"), ("B", "FLAT.TXT")):
+            with open(os.path.join(self.tmp, *p), "wb") as f:
+                f.write(b"x")
+        cpm, out = make_cpm(self.tmp, drives={"A": os.path.join(self.tmp, "A"),
+                                              "B": os.path.join(self.tmp, "B")})
+        self.assertEqual(cpm._outside_user_areas(), {"A": ["LOOSE.TXT"]})
+        cpm.shell()
+        self.assertIn("A: 1 file outside the user area folders, not visible: LOOSE.TXT", out.getvalue())
+        self.assertNotIn("B:", out.getvalue().split("A0>")[0])
+
     def test_shell(self):
         with open(os.path.join(self.tmp, "hello.com"), "wb") as f:
             f.write(PROG_HELLO)

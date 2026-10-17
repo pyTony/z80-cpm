@@ -31,6 +31,11 @@ A Z80 CPU simulator and a CP/M 2.2 emulator, both in pure Python. No dependencie
     python cpm.py --cpu z180               # Z180 extra instructions (see below)
     python cpm.py --z3                     # ZCPR3 environment (see Z3 below)
 
+User areas are per drive: a drive folder with a subfolder `0` has user areas `A/0`, `A/1` ...
+(the missing ones are created when a file is first written there); a drive folder without one is
+flat, and every user area sees the same files. On a drive with user areas, files left in the
+drive folder itself are not visible to CP/M; the prompt lists them at start.
+
 At the prompt type `HELP`. `Ctrl+]` or `F12` stops the emulator immediately (F12 for keyboards where `]` needs AltGr, such as the Finnish one).
 
 ## The command prompt

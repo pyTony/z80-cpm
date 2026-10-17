@@ -1050,6 +1050,20 @@ class CPM:
                 pass
         return sizes
 
+    def _outside_user_areas(self):
+        """{letter: [names]} of CP/M-named files lying in the top folder of a drive that has
+        user areas: CP/M cannot see them, only the files in DRIVE/0, DRIVE/1 ..."""
+        out = {}
+        for letter, base in sorted(self.drives.items()):
+            if self._users.get(letter):
+                try:
+                    names = sorted(e.name for e in os.scandir(base) if e.is_file() and self._to_83(e.name))
+                except OSError:
+                    names = []
+                if names:
+                    out[letter] = names
+        return out
+
     def _refresh_disk_params(self):
         letter = chr(65 + self.drive)
         sizes = self._drive_files(letter) if letter in self.drives else []
@@ -2014,7 +2028,9 @@ class CPM:
         "STARTUP": ("Start-up commands", "Commands run when the prompt starts: the file given with --startup,\n"
                     "else STARTUP.CPM on A: user 0. Put PATH and ALIAS lines there."),
         "USER": ("USER n", "Switch to user area n (0-15). Needs a disk laid out as\n"
-                 "DRIVE/0, DRIVE/1 ... on the host. The prompt shows it: A0>, A3>"),
+                 "DRIVE/0, DRIVE/1 ... on the host (a folder 0 turns them on; the others are made\n"
+                 "when a file is first written there).  On a drive without them every user area\n"
+                 "shows the same files.  The prompt shows it: A0>, A3>"),
         "d:": ("A: B: ... P:", "Switch the current drive, e.g. B:"),
         "HELP": ("HELP [command]  or  ?", "This list, or details about one command.   HELP KEYS"),
         "EXIT": ("EXIT  (also BYE, QUIT)", "Leave the emulator."),
@@ -2238,6 +2254,11 @@ class CPM:
     def shell(self):
         """Interactive command prompt. Returns at EOF or on EXIT."""
         self._print("\n" + self._c("bold", "CP/M 2.2 emulator") + " - type HELP for commands")
+        for letter, names in self._outside_user_areas().items():
+            self._print("\n" + self._c("red", "%s: %d file%s outside the user area folders, not visible: %s%s"
+                                        % (letter, len(names), "" if len(names) == 1 else "s",
+                                           " ".join(names[:5]), " ..." if len(names) > 5 else "")) +
+                        "\n   (move them into %s to use them in user 0)" % os.path.join(self.drives[letter], "0"))
         if not self._run_startup():
             return
         while True:
