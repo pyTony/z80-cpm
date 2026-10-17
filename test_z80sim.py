@@ -1,5 +1,7 @@
 import io
 import os
+import shutil
+import sys
 import tempfile
 import unittest
 
@@ -1095,6 +1097,51 @@ class CpmTests(unittest.TestCase):
         cpm.load(prog)
         cpm.run()
         self.assertEqual(out.getvalue(), "Q")
+
+
+class Z180RuntimeTests(unittest.TestCase):
+    """z180/mkruntime.py: the MLT multiplies give what uc80's own runtime gives."""
+
+    def setUp(self):
+        try:
+            import uc80, um80  # noqa: F401
+        except ImportError:
+            self.skipTest("uc80/um80 not installed (pip install uc80 um80)")
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def build(self, name, *uc80_args):
+        import subprocess
+        here = os.path.dirname(os.path.abspath(__file__))
+        run = lambda *a: subprocess.run([sys.executable, "-m", *a], cwd=self.tmp, check=True,
+                                       capture_output=True, text=True).stdout
+        lib = run("uc80.main", "--print-lib-dir").strip()
+        run("uc80.main", os.path.join(here, "z180", "multest.c"), "-o", name + ".mac", *uc80_args)
+        run("um80.um80", name + ".mac", "-o", name + ".rel")
+        run("um80.ul80", name + ".rel", os.path.join(lib, "libc.lib"), os.path.join(lib, "runtime.lib"),
+            "-o", name + ".com")
+        with open(os.path.join(self.tmp, name + ".com"), "rb") as f:
+            return f.read()
+
+    def output(self, program, cpu):
+        cpm, out = make_cpm(self.tmp)
+        cpm.cpu = cpu
+        cpm.load(program)
+        cpm.run()
+        return out.getvalue()
+
+    def test_mlt_multiplies_match(self):
+        import subprocess
+        here = os.path.dirname(os.path.abspath(__file__))
+        rt = os.path.join(self.tmp, "z180rt.mac")
+        subprocess.run([sys.executable, os.path.join(here, "z180", "mkruntime.py"), rt],
+                       check=True, capture_output=True)
+        plain = self.output(self.build("plain"), Z80())
+        fast = self.output(self.build("fast", "--runtime-lib", rt), Z180())
+        self.assertIn("1 4230196224", plain)
+        self.assertEqual(plain, fast)
 
 
 if __name__ == "__main__":

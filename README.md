@@ -14,6 +14,11 @@ A Z80 CPU simulator and a CP/M 2.2 emulator, both in pure Python. No dependencie
 * `fix_turbo_ansi.py` - repairs the damaged ANSI entry in Turbo Pascal 3's `TURBO.COM`/`TINST.DTA`.
 * `cc.ps1` - Windows PowerShell: compiles a C file with the `uc80`/`um80` pip packages
   (installed on first use) and runs it, e.g. `.\cc.ps1 hello` for `hello.c` (see the script's help).
+* `z180/` - Z180 support for those C programs: `mkruntime.py` makes uc80's runtime multiply with
+  `MLT` (Whetstone runs 1.7x faster), `z180.h`/`z180.mac` give `z180_in0`, `z180_out0`,
+  `z180_mlt` and `z180_window` (memory above 64K through the MMU); `banks.c` is an example.
+  `cc.ps1 -Cpu z180` (the default) uses them; such a program needs a Z180, `-Cpu z80` builds
+  one for any Z80.
 * `test_z80sim.py` - unit tests (`python -m unittest test_z80sim`).
 
 ## Usage

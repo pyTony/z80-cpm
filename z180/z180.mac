@@ -1,0 +1,90 @@
+; z180.mac - Z180 helpers for uc80 programs (see z180.h)
+; uc80 passes arguments on the stack (the first at SP+2 on entry) and returns
+; values in HL; BC and IX are kept here.
+
+	.Z80
+	CSEG
+
+; unsigned char z180_in0(unsigned char port)
+	PUBLIC	_z180_in0
+_z180_in0:
+	PUSH	BC
+	LD	HL,4
+	ADD	HL,SP
+	LD	C,(HL)
+	LD	B,0		; internal I/O: high address byte 0
+	IN	L,(C)
+	LD	H,0
+	POP	BC
+	RET
+
+; void z180_out0(unsigned char port, unsigned char value)
+	PUBLIC	_z180_out0
+_z180_out0:
+	PUSH	BC
+	LD	HL,4
+	ADD	HL,SP
+	LD	C,(HL)
+	INC	HL
+	INC	HL
+	LD	A,(HL)
+	LD	B,0
+	OUT	(C),A
+	POP	BC
+	RET
+
+; unsigned int z180_mlt(unsigned char a, unsigned char b)
+	PUBLIC	_z180_mlt
+_z180_mlt:
+	LD	HL,2
+	ADD	HL,SP
+	LD	A,(HL)
+	INC	HL
+	INC	HL
+	LD	L,(HL)
+	LD	H,A
+	DB	0EDH,6CH	; MLT HL
+	RET
+
+; unsigned char *z180_window(unsigned long phys)
+	PUBLIC	_z180_window
+_z180_window:
+	PUSH	BC
+	LD	HL,4
+	ADD	HL,SP
+	LD	C,(HL)		; phys bits 0-7
+	INC	HL
+	LD	B,(HL)		; bits 8-15
+	INC	HL
+	LD	A,(HL)		; bits 16-23
+	LD	E,B		; page = phys >> 12 (bits 12-19)
+	SRL	A
+	RR	E
+	SRL	A
+	RR	E
+	SRL	A
+	RR	E
+	SRL	A
+	RR	E
+	LD	A,0C8H		; first CBAR: common 1 from C000h, bank area from 8000h
+	DB	0EDH,39H,3AH	; OUT0 (3Ah),A   (with CBAR F0h a BBR change would move this code)
+	LD	A,E
+	SUB	8		; BBR so that the page lands at 8000h
+	DB	0EDH,39H,39H	; OUT0 (39h),A   BBR
+	LD	A,B
+	AND	0FH
+	OR	80H
+	LD	H,A
+	LD	L,C		; HL = 8000h + (phys & 0FFFh)
+	POP	BC
+	RET
+
+; void z180_unwindow(void)
+	PUBLIC	_z180_unwindow
+_z180_unwindow:
+	XOR	A
+	DB	0EDH,39H,39H	; OUT0 (39h),A   BBR = 0
+	LD	A,0F0H
+	DB	0EDH,39H,3AH	; OUT0 (3Ah),A   CBAR = F0h
+	RET
+
