@@ -162,4 +162,4 @@ about 33 minutes here: 5.76 billion instructions, 46.7 billion T-states, 3 h 15 
 
 `whetstone.c` is the classic Whetstone benchmark (100,000 Whetstone instructions). `python cc.py whetstone --cpu z80`
 builds it (uc80, 48-bit floating point), runs it and prints the run time: 204 million
-T-states, 51 s on a real 4 MHz Z80 (about 2 KWIPS), and about 8 s here (6x real time).
+T-states, 51 s on a real 4 MHz Z80 (about 2 KWIPS), and about 8 s in the emulator (6x real speed).
