@@ -76,7 +76,7 @@ def ensure_packages():
 
 
 def disk_target(spec, disks_dir, name):
-    m = re.fullmatch(r"([A-Pa-p])(\d{0,2})", spec)
+    m = re.fullmatch(r"([A-Pa-p])(\d{0,2}):?", spec)        # B, B3, B: or B3: (as at the CP/M prompt)
     if not m:
         fail("--disk should look like B or B3 (drive, optional user 0-15)")
     drive, user = m.group(1).upper(), int(m.group(2) or 0)
@@ -98,7 +98,7 @@ def main(argv=None):
     ap.add_argument("file", help="hello, hello.c or hello.com")
     ap.add_argument("-o", "--output", help="name of the .com (default: the source's name)")
     ap.add_argument("--cpu", choices=["z80", "z180"], default="z180")
-    ap.add_argument("--disk", default="", help="drive (and user) to put the .com on: B or B3")
+    ap.add_argument("--disk", default="", help="drive (and user) to put the .com on: B, B3, B: or B3:")
     ap.add_argument("--disks-dir", default="disks")
     ap.add_argument("--no-run", action="store_true", help="build only")
     ap.add_argument("--keep", action="store_true", help="keep the .mac and .rel files")
