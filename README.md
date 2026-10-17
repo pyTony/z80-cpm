@@ -96,6 +96,8 @@ letters (`B:`), it has some ZCPR-style extras (see `HELP name`):
 * `VIEW file` - pager for files of any size (memory-mapped, so no 64K limit): Space/b or
   PgDn/PgUp, Enter/arrows, Home/End or g/G, `/text` search with n/N, q or Esc to quit. Binary files open as a hex dump
   (`x` switches hex/text, `VIEW file HEX` forces it).
+* `DIR C3:` (or `DIR C3:*.COM`) lists another drive and user area; `C3:` switches to both at once.
+  From the host, `python cpm.py -c "DIR C3:"` runs prompt commands (`;` separates several) and exits.
 * `DEBUG [file [args]]` - a small monitor for the program before and while it runs:
   `L` disassemble (Z80, and the Z180 extras with `--cpu z180`; the CP/M `DDT` knows only the
   8080), `D` dump, `R` registers (`R HL 1234` sets one), `T [n]` trace n instructions with the
