@@ -148,6 +148,11 @@ CP/M software is not included; bring your own disks.
 
 Speed: roughly 5-7x a real 4 MHz Z80 on MBASIC (CPython 3.13/3.14, desktop CPU).
 
+Accuracy: `ZEXALL.COM`, the Z80 instruction exerciser that also checks the undocumented X/Y
+flags, passes all 67 tests (`python cpm.py --time` at the prompt, then `ZEXALL`). The run takes
+about 33 minutes here: 5.76 billion instructions, 46.7 billion T-states, 3 h 15 min on a real
+4 MHz Z80. ZEXALL is not included; it is in the public `zexall`/`zexdoc` packages.
+
 `whetstone.c` is the classic Whetstone benchmark (100,000 Whetstone instructions). Built with
 `.\cc.ps1 whetstone` (uc80, 48-bit floating point) and run with `--time` it takes 204 million
 T-states, 51 s on a real 4 MHz Z80 (about 2 KWIPS), and about 8 s here (6x real time).
