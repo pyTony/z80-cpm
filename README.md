@@ -10,6 +10,11 @@ A Z80 CPU simulator and a CP/M 2.2 emulator, both in pure Python. No dependencie
   optional user areas (`A/0`, `A/1` ...), a small command prompt, ANSI/VT output,
   raw keyboard input on Windows and POSIX.
 * `z80dis.py` - Z80/Z180 disassembler (used by `DEBUG`); `debugger.py` - the `DEBUG` monitor.
+* `debug_gui.pyw` - the same debugger in a window (tkinter): code with the current line and
+  breakpoints, registers with changes highlighted, stack, memory (physical too on a Z180), the
+  program's console and the debugger command line. `python debug_gui.pyw [--cpu z180] PROG.COM [args]`;
+  F7 step, F8 step over, F5 run, F6 stop, F4 run to the selected line, F9 or a double-click
+  toggles a breakpoint.
 * `diskimg.py` - reads raw CP/M disk images for `IMAGE`; `z3env.py` - the ZCPR3 environment for `Z3`.
 * `fix_turbo_ansi.py` - repairs the damaged ANSI entry in Turbo Pascal 3's `TURBO.COM`/`TINST.DTA`.
 * `cc.ps1` - Windows PowerShell: compiles a C file with the `uc80`/`um80` pip packages

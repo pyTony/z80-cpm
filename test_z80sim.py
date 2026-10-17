@@ -1144,5 +1144,50 @@ class Z180RuntimeTests(unittest.TestCase):
         self.assertEqual(plain, fast)
 
 
+def _tk_ok():
+    try:
+        import tkinter
+        tkinter.Tk().destroy()
+        return True
+    except Exception:
+        return False
+
+
+@unittest.skipUnless(_tk_ok(), "needs tkinter and a display")
+class DebugGuiTests(unittest.TestCase):
+    """debug_gui.pyw: run a small program that prints, reads a line and stops at a breakpoint."""
+
+    def test_run_type_and_break(self):
+        from importlib.machinery import SourceFileLoader
+        here = os.path.dirname(os.path.abspath(__file__))
+        dg = SourceFileLoader("debug_gui", os.path.join(here, "debug_gui.pyw")).load_module()
+        img = bytearray(0x50)
+        img[:20] = bytes([0x11, 0x20, 0x01, 0x0E, 0x09, 0xCD, 0x05, 0x00,     # print "Hello!"
+                          0x11, 0x40, 0x01, 0x0E, 0x0A, 0xCD, 0x05, 0x00,     # read a line
+                          0x3A, 0x41, 0x01, 0xC9])
+        img[0x20:0x29] = b"Hello!\r\n$"
+        img[0x40] = 0x10
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        path = os.path.join(tmp, "TEST.COM")
+        with open(path, "wb") as f:
+            f.write(img)
+        app = dg.App("z180")
+        self.addCleanup(app.destroy)
+        app.load(path)
+        app.dbg.bps.append(0x0110)
+        app.after(100, lambda: [app.console.key(c) for c in b"hi\r"])
+        app.go()
+        self.assertEqual(app.cpm.cpu.pc, 0x0110)
+        self.assertEqual(app.term_text.get("1.0", "end-1c"), "Hello!\nhi\n")
+        self.assertEqual(bytes(app.cpm.cpu.mem[0x141:0x144]), b"\x02hi")
+        self.assertIn("> 0110", app.code.get("1.0", "end"))
+        app.step()
+        self.assertEqual(app.cpm.cpu.r[7], 2)
+        self.assertIn("AF  0200", app.regs.get("1.0", "end"))
+        app.go()
+        self.assertTrue(app.cpm.exited)
+
+
 if __name__ == "__main__":
     unittest.main()
