@@ -1491,10 +1491,12 @@ class CPM:
             dt = time.perf_counter() - t0 - wait
             ts = self.cpu.tstates - ts0
             real = ts / 4e6
-            self._print("\n" + self._c("dim", "[time]") + " %.2f s here; %s instructions, %s T-states = %.3f s on a "
-                        "4 MHz Z80 (%.2fx real-time speed)%s\n" %
-                        (dt, format(self._steps_last, ","),
-                         format(ts, ","), real, real / dt if dt else 0,
+            real_cpu = ("a 4 MHz Z180 would take about" if self.cpu.z180    # Z80 cycle counts
+                        else "a real 4 MHz Z80 takes")
+            self._print("\n" + self._c("dim", "[time]") + " ran %.2f s on this computer; %s "
+                        "%.2f s (%.2fx real speed); %s instructions, %s T-states%s\n" %
+                        (dt, real_cpu, real, real / dt if dt else 0, format(self._steps_last, ","),
+                         format(ts, ","),
                          "; %.1f s waiting for keys not counted" % wait if wait >= 0.05 else ""))
             self.console.flush()
         return n

@@ -108,6 +108,8 @@ def main(argv=None):
     base = re.sub(r"\.(c|com)$", "", ns.file, flags=re.I)
     out = re.sub(r"\.com$", "", ns.output, flags=re.I) if ns.output else base
     src, asm, rel, com = base + ".c", out + ".mac", out + ".rel", out + ".com"
+    if ns.disk:                         # check the drive and the 8-letter name before building
+        target, drive, user = disk_target(ns.disk, ns.disks_dir, os.path.basename(out))
     ensure_packages()
     if not os.path.exists(src):
         say("%s not found, creating a small example." % src, "yellow")
@@ -153,7 +155,6 @@ def main(argv=None):
 
     cmd = [sys.executable, os.path.join(HERE, "cpm.py"), "--time", "--cpu", ns.cpu]
     if ns.disk:
-        target, drive, user = disk_target(ns.disk, ns.disks_dir, os.path.basename(out))
         os.replace(com, target)
         com = target
         say("Moved to %s (drive %s:, user %d)" % (target, drive, user), "green")
