@@ -8,3 +8,4 @@ mydiskA/
 *.patch
 z180/z180rt.mac
 z180/*.rel
+*.log

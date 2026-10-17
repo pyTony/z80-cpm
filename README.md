@@ -17,12 +17,13 @@ A Z80 CPU simulator and a CP/M 2.2 emulator, both in pure Python. No dependencie
   toggles a breakpoint.
 * `diskimg.py` - reads raw CP/M disk images for `IMAGE`; `z3env.py` - the ZCPR3 environment for `Z3`.
 * `fix_turbo_ansi.py` - repairs the damaged ANSI entry in Turbo Pascal 3's `TURBO.COM`/`TINST.DTA`.
-* `cc.ps1` - Windows PowerShell: compiles a C file with the `uc80`/`um80` pip packages
-  (installed on first use) and runs it, e.g. `.\cc.ps1 hello` for `hello.c` (see the script's help).
+* `cc.py` - compiles a C file with the `uc80`/`um80` pip packages (installed on first use) and
+  runs it with its run time, e.g. `python cc.py hello` for `hello.c`; the tools' messages go to
+  `hello.log` (`--full` shows them). `cc.ps1` is the same for PowerShell (`.\cc.ps1 hello`).
 * `z180/` - Z180 support for those C programs: `mkruntime.py` makes uc80's runtime multiply with
   `MLT` (Whetstone runs 1.7x faster), `z180.h`/`z180.mac` give `z180_in0`, `z180_out0`,
   `z180_mlt` and `z180_window` (memory above 64K through the MMU); `banks.c` is an example.
-  `cc.ps1 -Cpu z180` (the default) uses them; such a program needs a Z180, `-Cpu z80` builds
+  `cc.py --cpu z180` (the default) uses them; such a program needs a Z180, `--cpu z80` builds
   one for any Z80.
 * `test_z80sim.py` - unit tests (`python -m unittest test_z80sim`).
 
@@ -158,6 +159,6 @@ flags, passes all 67 tests (`python cpm.py --time` at the prompt, then `ZEXALL`)
 about 33 minutes here: 5.76 billion instructions, 46.7 billion T-states, 3 h 15 min on a real
 4 MHz Z80. ZEXALL is not included; it is in the public `zexall`/`zexdoc` packages.
 
-`whetstone.c` is the classic Whetstone benchmark (100,000 Whetstone instructions). Built with
-`.\cc.ps1 whetstone` (uc80, 48-bit floating point) and run with `--time` it takes 204 million
+`whetstone.c` is the classic Whetstone benchmark (100,000 Whetstone instructions). `python cc.py whetstone --cpu z80`
+builds it (uc80, 48-bit floating point), runs it and prints the run time: 204 million
 T-states, 51 s on a real 4 MHz Z80 (about 2 KWIPS), and about 8 s here (6x real time).
