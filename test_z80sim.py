@@ -1144,6 +1144,37 @@ class Z180RuntimeTests(unittest.TestCase):
         self.assertEqual(plain, fast)
 
 
+class Z180OnZ80Tests(unittest.TestCase):
+    """A Z180 instruction run on the Z80 is reported once; the Z180 itself stays quiet."""
+
+    PROG = bytes([0x06, 0x03, 0x0E, 0x05, 0x21, 0x04, 0x03,   # LD B,3  LD C,5  LD HL,0304h
+                  0xED, 0x4C, 0xED, 0x6C, 0xC9])             # MLT BC  MLT HL  RET
+
+    def run_prog(self, cpu):
+        out = io.StringIO()
+        cpm = CPM(cpu=cpu, console=Console(stdin=io.StringIO(""), stdout=out))
+        cpm.load(self.PROG)
+        cpm.run(1000)
+        return cpm, out.getvalue()
+
+    def test_warns_once_on_z80(self):
+        cpm, out = self.run_prog(Z80())
+        self.assertEqual(out.count("Z180 instruction"), 1)
+        self.assertIn("0107: MLT BC", out)
+
+    def test_z180_quiet_and_multiplies(self):
+        cpm, out = self.run_prog(Z180())
+        self.assertNotIn("Z180 instruction", out)
+        self.assertEqual((cpm.cpu.bc, cpm.cpu.hl), (15, 12))
+
+    def test_neg_alias_still_neg_on_z80(self):
+        cpu = Z80()
+        cpu.mem[0:3] = bytes([0x3E, 0x01, 0xED])
+        cpu.mem[3] = 0x4C
+        cpu.run_fast(0x10000, 2)
+        self.assertEqual(cpu.r[7], 0xFF)
+
+
 def _tk_ok():
     try:
         import tkinter

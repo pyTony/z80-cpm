@@ -24,7 +24,8 @@ A Z80 CPU simulator and a CP/M 2.2 emulator, both in pure Python. No dependencie
   `MLT` (Whetstone runs 1.7x faster), `z180.h`/`z180.mac` give `z180_in0`, `z180_out0`,
   `z180_mlt` and `z180_window` (memory above 64K through the MMU); `banks.c` is an example.
   `cc.py --cpu z180` (the default) uses them; such a program needs a Z180, `--cpu z80` builds
-  one for any Z80.
+  one for any Z80 (`-o whet80.com` keeps both builds of one source). `cpm.py` names its CPU when
+  it starts and warns the first time a program runs a Z180 instruction on the Z80.
 * `test_z80sim.py` - unit tests (`python -m unittest test_z80sim`).
 
 ## Usage

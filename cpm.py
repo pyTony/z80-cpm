@@ -36,6 +36,7 @@ import sys
 
 import z3env
 from debugger import Debugger
+from z80dis import disasm
 from z80sim import Z80, Z180
 
 TPA = 0x0100
@@ -661,6 +662,7 @@ class AnsiScreen:
 
 class CPM:
     def __init__(self, cpu=None, console=None, drives=None, printer=None):
+        self._z180_warned = False
         self.cpu = cpu if cpu is not None else Z80()
         self.console = console if console is not None else Console()
         self.drives = {k.upper(): os.path.abspath(v)
@@ -792,8 +794,33 @@ class CPM:
             return s.ljust(n)[:n]
         return bytes([drive]) + pad(name, 8).encode("latin1") + pad(ext, 3).encode("latin1")
 
+    @property
+    def cpu(self):
+        return self._cpu
+
+    @cpu.setter
+    def cpu(self, cpu):
+        self._cpu = cpu
+        cpu.on_z180_op = None if cpu.z180 else self._z180_op
+
+    def _z180_op(self, cpu, op):
+        """A Z180-only instruction on the Z80: say so once per program."""
+        if self._z180_warned:
+            return
+        self._z180_warned = True
+        pc = (cpu.pc - 2) & 0xFFFF
+        name = disasm(lambda a: cpu.mem[a & 0xFFFF], pc, True)[1]
+        self._print("\n" + self._c("yellow", "[%04X: %s is a Z180 instruction; this is a Z80. "
+                                    "Run Z180 programs with --cpu z180 (or CPU Z180)]" % (pc, name)) + "\n")
+
+    def cpu_line(self):
+        if self.cpu.z180:
+            return "CPU: Z180 (1 MB with the MMU)"
+        return "CPU: Z80 (--cpu z180 or CPU Z180 for Z180 programs)"
+
     def load(self, program, args=(), addr=TPA):
         """Load a .COM image and set up page zero, FCBs and CPU registers."""
+        self._z180_warned = False
         self.cpu.reset()                    # first: a Z180 MMU goes back to the plain 64K
         self._init_memory()
         self.dma = 0x80
@@ -2266,6 +2293,7 @@ class CPM:
     def shell(self):
         """Interactive command prompt. Returns at EOF or on EXIT."""
         self._print("\n" + self._c("bold", "CP/M 2.2 emulator") + " - type HELP for commands")
+        self._print("\n" + self._c("dim", self.cpu_line()))
         for letter, names in self._outside_user_areas().items():
             self._print("\n" + self._c("red", "%s: %d file%s outside the user area folders, not visible: %s%s"
                                         % (letter, len(names), "" if len(names) == 1 else "s",
@@ -2410,6 +2438,7 @@ def main(argv=None):
     try:
         if ns.program:
             cpm.load_file(ns.program, ns.args)
+            sys.stderr.write("[%s]\n" % cpm.cpu_line())     # stderr: program output stays clean
             cpm.run_timed()
         else:
             cpm.shell()

@@ -9,6 +9,7 @@
   .\cc.ps1 hello -Disk B3         # hello.com -> disks\B\3 (drive B, user 3)
   .\cc.ps1 hello.c -Cpu z80 -NoRun -Keep
   .\cc.ps1 whetstone -Full        # every tool message on the screen too
+  .\cc.ps1 whetstone -Cpu z80 -Output whet80.com   # a Z80 build next to the Z180 one
 #>
 param(
     [Parameter(Mandatory = $true, Position = 0)] [string]$FileName,
@@ -17,12 +18,14 @@ param(
     [string]$DisksDir = ".\disks",
     [switch]$NoRun,
     [switch]$Keep,
-    [switch]$Full
+    [switch]$Full,
+    [string]$Output = ""
 )
 $pyArgs = @((Join-Path $PSScriptRoot "cc.py"), $FileName, "--cpu", $Cpu, "--disks-dir", $DisksDir)
 if ($Disk) { $pyArgs += @("--disk", $Disk) }
 if ($NoRun) { $pyArgs += "--no-run" }
 if ($Keep) { $pyArgs += "--keep" }
 if ($Full) { $pyArgs += "--full" }
+if ($Output) { $pyArgs += @("-o", $Output) }
 python @pyArgs
 exit $LASTEXITCODE

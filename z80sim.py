@@ -33,6 +33,7 @@ _COND_MASK = (ZF, ZF, CF, CF, PF, PF, SF, SF)   # NZ Z NC C PO PE P M
 
 class Z80:
     z180 = False                  # True in Z180: the extra ED opcodes (see class Z180)
+    on_z180_op = None             # Z80 only: called as f(cpu, op) when a Z180-only ED op runs
 
     def __init__(self, memory=None, io_read=None, io_write=None):
         self.mem = memory if memory is not None else bytearray(0x10000)
@@ -848,6 +849,8 @@ class Z80:
     def _ed_op(self, op):
         r = self.r
         x = op >> 6; y = (op >> 3) & 7; z = op & 7; p = y >> 1; q = y & 1
+        if op in Z180_ONLY_ED and self.on_z180_op is not None and not self.z180:
+            self.on_z180_op(self, op)
 
         if x == 1:
             if z == 0:                                        # IN r,(C)
@@ -1030,6 +1033,11 @@ def _daa_table():
 
 
 _Z180_ED_NEG_SLOTS = (0x4C, 0x5C, 0x6C, 0x7C, 0x64, 0x74)   # NEG aliases the Z180 uses for MLT/TST
+# ED opcodes that are new on the Z180 (IN0, OUT0, TST, MLT, TSTIO, SLP, OTIM/OTDM(R)); on a Z80
+# they are NOPs or NEG/IM 1 aliases, so a Z180 program runs on, with wrong results
+Z180_ONLY_ED = frozenset(
+    [o for o in range(0x40) if o & 7 in (0, 4) or (o & 7 == 1 and o != 0x31)] +
+    list(_Z180_ED_NEG_SLOTS) + [0x76, 0x83, 0x8B, 0x93, 0x9B])
 
 
 class Z180(Z80):
@@ -1503,7 +1511,7 @@ def _makers(z180):
     cb = [_compile(_cb_template(o)[0], "CB %02X" % o) for o in range(256)]
     ed = []
     for o in range(256):
-        body = None if (z180 and o in _Z180_ED_NEG_SLOTS) else _ed_template(o)
+        body = None if o in _Z180_ED_NEG_SLOTS else _ed_template(o)   # Z80: see on_z180_op
         if body is None:
             body = ["cpu.xy=None", "cpu.pc=pc", "cpu.tx+=cpu._ed()"] + _POST
         ed.append(_compile(body, "ED %02X" % o))
