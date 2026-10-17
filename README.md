@@ -142,3 +142,7 @@ and `RamWrite(addr, value)`. Note that `LUA.COM` itself always makes the file ty
 CP/M software is not included; bring your own disks.
 
 Speed: roughly 5-7x a real 4 MHz Z80 on MBASIC (CPython 3.13/3.14, desktop CPU).
+
+`whetstone.c` is the classic Whetstone benchmark (100,000 Whetstone instructions). Built with
+`.\cc.ps1 whetstone` (uc80, 48-bit floating point) and run with `--time` it takes 204 million
+T-states, 51 s on a real 4 MHz Z80 (about 2 KWIPS), and about 8 s here (6x real time).
