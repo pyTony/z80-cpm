@@ -5,11 +5,15 @@ A Z80 CPU simulator and a CP/M 2.2 emulator, both in pure Python. No dependencie
 * `z80sim.py` - the CPU: all documented and the common undocumented opcodes, X/Y flags,
   T-state counting, IM 0/1/2, NMI, HALT. `Z80.run_fast()` runs common opcodes through
   pre-generated handlers (about 3x faster than `step()`); it is checked against plain
-  `step()` by randomised tests.
+  `step()` by randomised tests, prefixed (CB/DD/ED/FD) opcodes included.
 * `cpm.py` - CP/M 2.2 by trapping BDOS/BIOS calls: drives mapped to host folders,
   optional user areas (`A/0`, `A/1` ...), a small command prompt, ANSI/VT output,
   raw keyboard input on Windows and POSIX.
+* `z80dis.py` - Z80/Z180 disassembler (used by `DEBUG`); `debugger.py` - the `DEBUG` monitor.
+* `diskimg.py` - reads raw CP/M disk images for `IMAGE`; `z3env.py` - the ZCPR3 environment for `Z3`.
 * `fix_turbo_ansi.py` - repairs the damaged ANSI entry in Turbo Pascal 3's `TURBO.COM`/`TINST.DTA`.
+* `cc.ps1` - Windows PowerShell: compiles a C file with the `uc80`/`um80` pip packages
+  (installed on first use) and runs it, e.g. `.\cc.ps1 hello` for `hello.c` (see the script's help).
 * `test_z80sim.py` - unit tests (`python -m unittest test_z80sim`).
 
 ## Usage
@@ -17,12 +21,15 @@ A Z80 CPU simulator and a CP/M 2.2 emulator, both in pure Python. No dependencie
     python cpm.py                          # CP/M prompt on ./disks (offers to create A..P there)
     python cpm.py PROGRAM.COM args         # run a program (starts on that program's disk)
     python cpm.py --disk DISKS PROGRAM.COM # DISKS/A, DISKS/B ... one folder per drive
+    python cpm.py --dir FOLDER PROGRAM.COM # FOLDER is drive A: (default: the current folder)
     python cpm.py --drive B=some/folder
     python cpm.py --charset fi             # Finnish/Swedish letters in [ \ ] { | }
     python cpm.py --backspace del          # Backspace sends 7Fh instead of ^H
     python cpm.py --time PROGRAM.COM       # report run time, instructions, T-states
     python cpm.py --startup FILE           # run these commands at start (else A:0 STARTUP.CPM)
     python cpm.py --color auto|on|off      # ANSI colour in the Python-made prompt/DIR output
+    python cpm.py --cpu z180               # Z180 extra instructions (see below)
+    python cpm.py --z3                     # ZCPR3 environment (see Z3 below)
 
 At the prompt type `HELP`. `Ctrl+]` or `F12` stops the emulator immediately (F12 for keyboards where `]` needs AltGr, such as the Finnish one).
 

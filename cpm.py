@@ -1966,7 +1966,7 @@ class CPM:
                 "the name or type.   DIR   DIR *.COM   DIR B:*.TXT   DIR A*.*"),
         "ERA": ("ERA spec", "Delete files.   ERA OLD.TXT   ERA *.BAK"),
         "REN": ("REN new=old", "Rename a file.   REN NEW.TXT=OLD.TXT"),
-        "COPY": ("COPY source [destination]", "Copy files.   COPY A.TXT B:   COPY *.COM B3:   COPY A.TXT B.TXT   COPY *.TXT *.BAK\n"
+        "COPY": ("COPY source [destination]  (also CP)", "Copy files.   COPY A.TXT B:   COPY *.COM B3:   COPY A.TXT B.TXT   COPY *.TXT *.BAK\n"
                  "The destination is a drive (B:), a drive and user area (B3:), a name or a pattern;\n"
                  "with no destination the files go to the current drive and user area (same name =\n"
                  "SAME FILE).  Existing files are replaced.  Several sources need a drive or a pattern."),
@@ -1982,15 +1982,17 @@ class CPM:
                   "slice, read only), or copy them out into the current or a given drive and user.\n"
                   "The format is guessed unless named (hd1k:2 = slice 2).  IMAGE ? lists the formats;\n"
                   "a cpmtools DISKDEFS file in the folder adds more.   IMAGE RC.IMG GET 0:*.COM B3:"),
-        "PLAY": ("PLAY file [fps|baud]", "Show an ANSI/terminal stream (BBS art, ANSI animations such as Bad Apple).\n"
+        "PLAY": ("PLAY file [fps|baud] [RAW]", "Show an ANSI/terminal stream (BBS art, ANSI animations such as Bad Apple).\n"
                  "A number up to 240 is frames per second (frames start at ESC[H); a larger one\n"
-                 "is a modem speed such as 9600.  Default: 30 fps for animations, else 9600 baud.\n"
-                 "q or Esc stops.  Start with --charset cp437 for the IBM block characters."),
+                 "is a modem speed such as 9600.  Default: 30 fps for animations, 57600 baud for a\n"
+                 "SAUCE ANSiMation, else 9600 baud.  RAW sends a baud-rate stream as it is instead\n"
+                 "of drawing it through an 80x25 screen.  q or Esc stops.  Start with --charset cp437\n"
+                 "for the IBM block characters."),
         "Z3": ("Z3 [ON|OFF]", "ZCPR3 environment for Z-System tools (Z3LOC, ZSHOW, SETPATH, ...): the\n"
                "256-byte environment descriptor with a path, wheel byte, message buffers and an\n"
                "ANSI terminal capability block, below a lowered BDOS address.  There is no ZCPR3\n"
                "command processor, so each tool is started on its own.  Also --z3."),
-        "DEBUG": ("DEBUG [file [args]]", "Monitor/debugger: load a program and look at it before it runs.  L disassemble\n"
+        "DEBUG": ("DEBUG [file [args]]  (also DBG)", "Monitor/debugger: load a program and look at it before it runs.  L disassemble\n"
                   "(Z80, Z180 with --cpu z180), D dump, R registers (R HL 1234 sets one), T [n] trace n\n"
                   "instructions, P step over CALL/loops, G go, B/BC breakpoints, E/F enter/fill bytes,\n"
                   "H help, Q leave.  Numbers are hex.  DEBUG alone gives an empty memory to E-nter code in."),
@@ -2035,7 +2037,7 @@ class CPM:
         if topic:
             key = topic.upper().rstrip(":") + (":" if len(topic.rstrip(":")) == 1 else "")
             key = "d:" if len(topic.rstrip(":")) == 1 and topic.rstrip(":").isalpha() else key
-            key = {"BYE": "EXIT", "QUIT": "EXIT", "?": "HELP"}.get(key, key)
+            key = {"BYE": "EXIT", "QUIT": "EXIT", "?": "HELP", "CP": "COPY", "DBG": "DEBUG"}.get(key, key)
             if key not in h:
                 self._print("\nNo help for %s. Type HELP for the list." % topic.upper())
                 return
@@ -2315,7 +2317,7 @@ def main(argv=None):
                          "the equivalent time on a 4 MHz Z80")
     ns = ap.parse_args(argv)
     if not (ns.disk or ns.dir or ns.drive or ns.program):
-        # No disks given: use ./disk if it exists; else offer to create it (A..P, user 0).
+        # No disks given: use ./disks if it exists; else offer to create it (A..P, user 0).
         if os.path.isdir("disks"):
             ns.disk = "disks"
         elif sys.stdin.isatty():

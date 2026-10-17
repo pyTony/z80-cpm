@@ -383,6 +383,40 @@ class FastCoreTests(unittest.TestCase):
                     self.assertEqual(self._state(fast), self._state(slow), msg)
                     self.assertEqual(fast.mem, slow.mem, msg)
 
+    def test_every_index_cb_opcode_matches_step(self):
+        import random
+        rnd = random.Random(180)
+        for prefix in (0xDD, 0xFD):
+            for op in range(256):
+                mem = bytearray(rnd.randbytes(0x10000))
+                pc = rnd.choice([0x1000, 0xFFFD, 0xFFFF])
+                for i, b in enumerate((prefix, 0xCB, rnd.getrandbits(8), op, 0x76)):
+                    mem[(pc + i) & 0xFFFF] = b
+                fast, slow = Z80(bytearray(mem)), _SlowZ80(bytearray(mem))
+                regs = [rnd.getrandbits(8) for _ in range(8)]
+                ix, iy, f = rnd.getrandbits(16), rnd.getrandbits(16), rnd.getrandbits(8)
+                for c in (fast, slow):
+                    c.r[:] = regs
+                    c.f, c.pc, c.x[:] = f, pc, [ix, iy]
+                    c.rr = 0x7F
+                msg = "prefix %02X CB op %02X" % (prefix, op)
+                self.assertEqual(fast.run_fast(max_steps=2), slow.run_fast(max_steps=2), msg)
+                self.assertEqual(self._state(fast), self._state(slow), msg)
+                self.assertEqual(fast.mem, slow.mem, msg)
+
+    def test_daa_matches_step(self):
+        fast, slow = Z80(), _SlowZ80()
+        for c in (fast, slow):
+            c.mem[0] = 0x27
+        for f in range(256):
+            for a in range(256):
+                for c in (fast, slow):
+                    c.pc, c.r[7], c.f = 0, a, f
+                fast.run_fast(max_steps=1)
+                slow.run_fast(max_steps=1)
+                self.assertEqual((fast.r[7], fast.f, fast.tstates), (slow.r[7], slow.f, slow.tstates),
+                                 "A=%02X F=%02X" % (a, f))
+
     def test_ldir_is_fast(self):
         c = Z80()
         c.mem[0:3] = bytes([0xED, 0xB0, 0x76])
