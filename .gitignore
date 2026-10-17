@@ -6,3 +6,5 @@ disk/
 mydiskA/
 *.zip
 *.patch
+z180/z180rt.mac
+z180/*.rel

@@ -5,11 +5,20 @@ A Z80 CPU simulator and a CP/M 2.2 emulator, both in pure Python. No dependencie
 * `z80sim.py` - the CPU: all documented and the common undocumented opcodes, X/Y flags,
   T-state counting, IM 0/1/2, NMI, HALT. `Z80.run_fast()` runs common opcodes through
   pre-generated handlers (about 3x faster than `step()`); it is checked against plain
-  `step()` by randomised tests.
+  `step()` by randomised tests, prefixed (CB/DD/ED/FD) opcodes included.
 * `cpm.py` - CP/M 2.2 by trapping BDOS/BIOS calls: drives mapped to host folders,
   optional user areas (`A/0`, `A/1` ...), a small command prompt, ANSI/VT output,
   raw keyboard input on Windows and POSIX.
+* `z80dis.py` - Z80/Z180 disassembler (used by `DEBUG`); `debugger.py` - the `DEBUG` monitor.
+* `diskimg.py` - reads raw CP/M disk images for `IMAGE`; `z3env.py` - the ZCPR3 environment for `Z3`.
 * `fix_turbo_ansi.py` - repairs the damaged ANSI entry in Turbo Pascal 3's `TURBO.COM`/`TINST.DTA`.
+* `cc.ps1` - Windows PowerShell: compiles a C file with the `uc80`/`um80` pip packages
+  (installed on first use) and runs it, e.g. `.\cc.ps1 hello` for `hello.c` (see the script's help).
+* `z180/` - Z180 support for those C programs: `mkruntime.py` makes uc80's runtime multiply with
+  `MLT` (Whetstone runs 1.7x faster), `z180.h`/`z180.mac` give `z180_in0`, `z180_out0`,
+  `z180_mlt` and `z180_window` (memory above 64K through the MMU); `banks.c` is an example.
+  `cc.ps1 -Cpu z180` (the default) uses them; such a program needs a Z180, `-Cpu z80` builds
+  one for any Z80.
 * `test_z80sim.py` - unit tests (`python -m unittest test_z80sim`).
 
 ## Usage
@@ -17,12 +26,20 @@ A Z80 CPU simulator and a CP/M 2.2 emulator, both in pure Python. No dependencie
     python cpm.py                          # CP/M prompt on ./disks (offers to create A..P there)
     python cpm.py PROGRAM.COM args         # run a program (starts on that program's disk)
     python cpm.py --disk DISKS PROGRAM.COM # DISKS/A, DISKS/B ... one folder per drive
+    python cpm.py --dir FOLDER PROGRAM.COM # FOLDER is drive A: (default: the current folder)
     python cpm.py --drive B=some/folder
     python cpm.py --charset fi             # Finnish/Swedish letters in [ \ ] { | }
     python cpm.py --backspace del          # Backspace sends 7Fh instead of ^H
     python cpm.py --time PROGRAM.COM       # report run time, instructions, T-states
     python cpm.py --startup FILE           # run these commands at start (else A:0 STARTUP.CPM)
     python cpm.py --color auto|on|off      # ANSI colour in the Python-made prompt/DIR output
+    python cpm.py --cpu z180               # Z180 extra instructions (see below)
+    python cpm.py --z3                     # ZCPR3 environment (see Z3 below)
+
+User areas are per drive: a drive folder with a subfolder `0` has user areas `A/0`, `A/1` ...
+(the missing ones are created when a file is first written there); a drive folder without one is
+flat, and every user area sees the same files. On a drive with user areas, files left in the
+drive folder itself are not visible to CP/M; the prompt lists them at start.
 
 At the prompt type `HELP`. `Ctrl+]` or `F12` stops the emulator immediately (F12 for keyboards where `]` needs AltGr, such as the Finnish one).
 
@@ -46,9 +63,13 @@ letters (`B:`), it has some ZCPR-style extras (see `HELP name`):
   Ctrl+letter for terminals without a Ctrl key (e.g. Termux).
 * Line editing - Left/Right, Home/End, Delete, Backspace, `^U` (clear), Up/Down (earlier
   commands) work in the prompt, so a pasted line can be corrected before Enter.
-* `--cpu z180` - HD64180/Z180 instructions on top of the Z80: `MLT`, `TST`, `TSTIO`,
-  `IN0`/`OUT0`, `OTIM`/`OTDM` (and `R` forms), `SLP`. No MMU or on-chip peripherals; undefined
-  opcodes stay NOPs. A Z80 build of the same program still runs unchanged.
+* `--cpu z180` or `CPU Z180` at the prompt - HD64180/Z180 instructions on top of the Z80: `MLT`,
+  `TST`, `TSTIO`, `IN0`/`OUT0`, `OTIM`/`OTDM` (and `R` forms), `SLP`, and the MMU: 1 MB of
+  memory mapped in 4K pages through `CBAR` (3Ah), `BBR` (39h) and `CBR` (38h). Each program
+  starts with the plain 64K mapping; the rest of the 1 MB keeps its contents between programs.
+  No other on-chip peripherals; undefined opcodes stay NOPs. A Z80 build of the same program
+  still runs unchanged. In `DEBUG`, `R` shows the MMU, `R CBAR 84` sets it and `DP` dumps
+  physical memory.
 * `PLAY file [fps|baud] [RAW]` - play an ANSI/terminal stream (e.g. an ANSI "Bad Apple"). Frames
   start at `ESC[H`, `ESC[1;1H` or a form feed and are paced at fps (default 30 when the file
   has frames, 57600 baud for a SAUCE ANSiMation such as Bad Apple; a number above 240 is a baud rate, default 9600 otherwise). Stops at `^Z`
@@ -126,3 +147,12 @@ and `RamWrite(addr, value)`. Note that `LUA.COM` itself always makes the file ty
 CP/M software is not included; bring your own disks.
 
 Speed: roughly 5-7x a real 4 MHz Z80 on MBASIC (CPython 3.13/3.14, desktop CPU).
+
+Accuracy: `ZEXALL.COM`, the Z80 instruction exerciser that also checks the undocumented X/Y
+flags, passes all 67 tests (`python cpm.py --time` at the prompt, then `ZEXALL`). The run takes
+about 33 minutes here: 5.76 billion instructions, 46.7 billion T-states, 3 h 15 min on a real
+4 MHz Z80. ZEXALL is not included; it is in the public `zexall`/`zexdoc` packages.
+
+`whetstone.c` is the classic Whetstone benchmark (100,000 Whetstone instructions). Built with
+`.\cc.ps1 whetstone` (uc80, 48-bit floating point) and run with `--time` it takes 204 million
+T-states, 51 s on a real 4 MHz Z80 (about 2 KWIPS), and about 8 s here (6x real time).

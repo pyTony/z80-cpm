@@ -1,5 +1,7 @@
 import io
 import os
+import shutil
+import sys
 import tempfile
 import unittest
 
@@ -260,6 +262,35 @@ class Z180Tests(unittest.TestCase):
         self.assertEqual(seen, [(0x10, 3), (0x0F, 2), (0x0E, 1)])
         self.assertEqual((cpu.r[0], cpu.r[1], cpu.hl), (0, 0x0D, 0x0FFF))
 
+    def test_mmu_banks_1mb(self):
+        cpu = Z180()
+        self.assertEqual((cpu.cbar, cpu.bbr, cpu.cbr), (0xF0, 0, 0))
+        cpu.mem[0x4000] = 0xAA
+        # LD A,84h; OUT0 (3Ah),A; LD A,10h; OUT0 (39h),A; LD A,(4000h); LD B,A
+        # LD A,55h; LD (4000h),A; XOR A; OUT0 (39h),A; LD A,(4000h); HALT
+        cpu.mem[0:28] = bytes([0x3E, 0x84, 0xED, 0x39, 0x3A, 0x3E, 0x10, 0xED, 0x39, 0x39,
+                               0x3A, 0x00, 0x40, 0x47, 0x3E, 0x55, 0x32, 0x00, 0x40, 0xAF,
+                               0xED, 0x39, 0x39, 0x3A, 0x00, 0x40, 0x76, 0x00])
+        cpu.run_fast()
+        self.assertEqual(cpu.r[0], 0x00)                 # 4000h was physical 14000h: empty
+        self.assertEqual(cpu.r[7], 0xAA)                 # back to physical 4000h
+        self.assertEqual(cpu.physical()[0x14000], 0x55)
+        self.assertIn("bank 4000-7FFF=04000", cpu.mmu_info())
+        cpu.io_write(0x38, 0xF0)                         # OUT (C) path: CBR, common 1 F0000h+
+        self.assertEqual(cpu.io_read(0x38), 0xF0)
+        self.assertIn("common 1 8000-FFFF=F8000", cpu.mmu_info())
+        cpu.reset()
+        self.assertEqual(cpu.mem[0x4000], 0xAA)
+        self.assertEqual(cpu.physical()[0x14000], 0x55)  # survives a reset
+
+    def test_mmu_ports_do_not_reach_io_write(self):
+        seen = []
+        cpu = Z180(io_write=lambda p, v: seen.append(p), io_read=lambda p: 0x12)
+        cpu.io_write(0x39, 1)
+        cpu.io_write(0x3B, 2)
+        self.assertEqual(seen, [0x3B])
+        self.assertEqual((cpu.io_read(0x39), cpu.io_read(0x3B)), (1, 0x12))
+
     def test_otimr_and_slp(self):
         seen = []
         cpu = Z180(io_write=lambda p, v: seen.append((p, v)))
@@ -382,6 +413,40 @@ class FastCoreTests(unittest.TestCase):
                     self.assertEqual(n1, n2, msg)
                     self.assertEqual(self._state(fast), self._state(slow), msg)
                     self.assertEqual(fast.mem, slow.mem, msg)
+
+    def test_every_index_cb_opcode_matches_step(self):
+        import random
+        rnd = random.Random(180)
+        for prefix in (0xDD, 0xFD):
+            for op in range(256):
+                mem = bytearray(rnd.randbytes(0x10000))
+                pc = rnd.choice([0x1000, 0xFFFD, 0xFFFF])
+                for i, b in enumerate((prefix, 0xCB, rnd.getrandbits(8), op, 0x76)):
+                    mem[(pc + i) & 0xFFFF] = b
+                fast, slow = Z80(bytearray(mem)), _SlowZ80(bytearray(mem))
+                regs = [rnd.getrandbits(8) for _ in range(8)]
+                ix, iy, f = rnd.getrandbits(16), rnd.getrandbits(16), rnd.getrandbits(8)
+                for c in (fast, slow):
+                    c.r[:] = regs
+                    c.f, c.pc, c.x[:] = f, pc, [ix, iy]
+                    c.rr = 0x7F
+                msg = "prefix %02X CB op %02X" % (prefix, op)
+                self.assertEqual(fast.run_fast(max_steps=2), slow.run_fast(max_steps=2), msg)
+                self.assertEqual(self._state(fast), self._state(slow), msg)
+                self.assertEqual(fast.mem, slow.mem, msg)
+
+    def test_daa_matches_step(self):
+        fast, slow = Z80(), _SlowZ80()
+        for c in (fast, slow):
+            c.mem[0] = 0x27
+        for f in range(256):
+            for a in range(256):
+                for c in (fast, slow):
+                    c.pc, c.r[7], c.f = 0, a, f
+                fast.run_fast(max_steps=1)
+                slow.run_fast(max_steps=1)
+                self.assertEqual((fast.r[7], fast.f, fast.tstates), (slow.r[7], slow.f, slow.tstates),
+                                 "A=%02X F=%02X" % (a, f))
 
     def test_ldir_is_fast(self):
         c = Z80()
@@ -738,6 +803,18 @@ class CpmTests(unittest.TestCase):
         self.assertIn("BC=0102", text)
         self.assertIn("21 34 12 CD 10 01 76", text)
 
+    def test_debug_z180_mmu(self):
+        cpm, out = make_cpm(self.tmp, stdin="CPU Z180\nQUIT\n")
+        cpm.shell()
+        self.assertIn("CPU: Z180", out.getvalue())
+        cpm.cpu.physical()[0x12340:0x12342] = b"\xBE\xEF"
+        cpm.console = Console(io.StringIO("R CBAR 84\nR BBR 10\nDP 12340 12341\nD 2340 2341\nQ\n"), out)
+        cpm._ccp_debug_empty()
+        text = out.getvalue()
+        self.assertIn("CBAR=84 BBR=10", text)
+        self.assertRegex(text, r"12340 +BE EF")
+        self.assertNotRegex(text, r"\n2340 +BE EF")      # 2340h is common area 0
+
     def test_debug_register_addresses(self):
         cpm, out = make_cpm(self.tmp, stdin=(
             "E 100 21 34 12 CD 10 01 76\nE 1234 DE AD\nB 103\nG\nD HL 1235\nL PC+3 1\nL HL-1233 1\nQ\n"))
@@ -921,6 +998,19 @@ class CpmTests(unittest.TestCase):
         self.assertEqual(cpm.bdos_call(22, 0x200), 0)               # make in user 3
         self.assertTrue(os.path.exists(os.path.join(self.tmp, "3", "a.txt")))
 
+    def test_files_outside_user_areas_are_reported(self):
+        os.makedirs(os.path.join(self.tmp, "A", "0"))
+        os.makedirs(os.path.join(self.tmp, "B"))
+        for p in (("A", "LOOSE.TXT"), ("A", "notes.markdown"), ("A", "0", "IN.TXT"), ("B", "FLAT.TXT")):
+            with open(os.path.join(self.tmp, *p), "wb") as f:
+                f.write(b"x")
+        cpm, out = make_cpm(self.tmp, drives={"A": os.path.join(self.tmp, "A"),
+                                              "B": os.path.join(self.tmp, "B")})
+        self.assertEqual(cpm._outside_user_areas(), {"A": ["LOOSE.TXT"]})
+        cpm.shell()
+        self.assertIn("A: 1 file outside the user area folders, not visible: LOOSE.TXT", out.getvalue())
+        self.assertNotIn("B:", out.getvalue().split("A0>")[0])
+
     def test_shell(self):
         with open(os.path.join(self.tmp, "hello.com"), "wb") as f:
             f.write(PROG_HELLO)
@@ -1007,6 +1097,51 @@ class CpmTests(unittest.TestCase):
         cpm.load(prog)
         cpm.run()
         self.assertEqual(out.getvalue(), "Q")
+
+
+class Z180RuntimeTests(unittest.TestCase):
+    """z180/mkruntime.py: the MLT multiplies give what uc80's own runtime gives."""
+
+    def setUp(self):
+        try:
+            import uc80, um80  # noqa: F401
+        except ImportError:
+            self.skipTest("uc80/um80 not installed (pip install uc80 um80)")
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def build(self, name, *uc80_args):
+        import subprocess
+        here = os.path.dirname(os.path.abspath(__file__))
+        run = lambda *a: subprocess.run([sys.executable, "-m", *a], cwd=self.tmp, check=True,
+                                       capture_output=True, text=True).stdout
+        lib = run("uc80.main", "--print-lib-dir").strip()
+        run("uc80.main", os.path.join(here, "z180", "multest.c"), "-o", name + ".mac", *uc80_args)
+        run("um80.um80", name + ".mac", "-o", name + ".rel")
+        run("um80.ul80", name + ".rel", os.path.join(lib, "libc.lib"), os.path.join(lib, "runtime.lib"),
+            "-o", name + ".com")
+        with open(os.path.join(self.tmp, name + ".com"), "rb") as f:
+            return f.read()
+
+    def output(self, program, cpu):
+        cpm, out = make_cpm(self.tmp)
+        cpm.cpu = cpu
+        cpm.load(program)
+        cpm.run()
+        return out.getvalue()
+
+    def test_mlt_multiplies_match(self):
+        import subprocess
+        here = os.path.dirname(os.path.abspath(__file__))
+        rt = os.path.join(self.tmp, "z180rt.mac")
+        subprocess.run([sys.executable, os.path.join(here, "z180", "mkruntime.py"), rt],
+                       check=True, capture_output=True)
+        plain = self.output(self.build("plain"), Z80())
+        fast = self.output(self.build("fast", "--runtime-lib", rt), Z180())
+        self.assertIn("1 4230196224", plain)
+        self.assertEqual(plain, fast)
 
 
 if __name__ == "__main__":

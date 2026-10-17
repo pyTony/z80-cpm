@@ -794,6 +794,7 @@ class CPM:
 
     def load(self, program, args=(), addr=TPA):
         """Load a .COM image and set up page zero, FCBs and CPU registers."""
+        self.cpu.reset()                    # first: a Z180 MMU goes back to the plain 64K
         self._init_memory()
         self.dma = 0x80
         self.exited = False
@@ -808,7 +809,6 @@ class CPM:
         fcb2 = self._parse_fcb(args[1]) if len(args) > 1 else bytes([0]) + b" " * 11
         self._put(0x5C, fcb1)
         self._put(0x6C, fcb2)
-        cpu.reset()
         cpu.r[7] = 0
         cpu.f = 0
         cpu.pc = addr
@@ -1049,6 +1049,20 @@ class CPM:
             except OSError:
                 pass
         return sizes
+
+    def _outside_user_areas(self):
+        """{letter: [names]} of CP/M-named files lying in the top folder of a drive that has
+        user areas: CP/M cannot see them, only the files in DRIVE/0, DRIVE/1 ..."""
+        out = {}
+        for letter, base in sorted(self.drives.items()):
+            if self._users.get(letter):
+                try:
+                    names = sorted(e.name for e in os.scandir(base) if e.is_file() and self._to_83(e.name))
+                except OSError:
+                    names = []
+                if names:
+                    out[letter] = names
+        return out
 
     def _refresh_disk_params(self):
         letter = chr(65 + self.drive)
@@ -1966,7 +1980,7 @@ class CPM:
                 "the name or type.   DIR   DIR *.COM   DIR B:*.TXT   DIR A*.*"),
         "ERA": ("ERA spec", "Delete files.   ERA OLD.TXT   ERA *.BAK"),
         "REN": ("REN new=old", "Rename a file.   REN NEW.TXT=OLD.TXT"),
-        "COPY": ("COPY source [destination]", "Copy files.   COPY A.TXT B:   COPY *.COM B3:   COPY A.TXT B.TXT   COPY *.TXT *.BAK\n"
+        "COPY": ("COPY source [destination]  (also CP)", "Copy files.   COPY A.TXT B:   COPY *.COM B3:   COPY A.TXT B.TXT   COPY *.TXT *.BAK\n"
                  "The destination is a drive (B:), a drive and user area (B3:), a name or a pattern;\n"
                  "with no destination the files go to the current drive and user area (same name =\n"
                  "SAME FILE).  Existing files are replaced.  Several sources need a drive or a pattern."),
@@ -1982,15 +1996,20 @@ class CPM:
                   "slice, read only), or copy them out into the current or a given drive and user.\n"
                   "The format is guessed unless named (hd1k:2 = slice 2).  IMAGE ? lists the formats;\n"
                   "a cpmtools DISKDEFS file in the folder adds more.   IMAGE RC.IMG GET 0:*.COM B3:"),
-        "PLAY": ("PLAY file [fps|baud]", "Show an ANSI/terminal stream (BBS art, ANSI animations such as Bad Apple).\n"
+        "PLAY": ("PLAY file [fps|baud] [RAW]", "Show an ANSI/terminal stream (BBS art, ANSI animations such as Bad Apple).\n"
                  "A number up to 240 is frames per second (frames start at ESC[H); a larger one\n"
-                 "is a modem speed such as 9600.  Default: 30 fps for animations, else 9600 baud.\n"
-                 "q or Esc stops.  Start with --charset cp437 for the IBM block characters."),
+                 "is a modem speed such as 9600.  Default: 30 fps for animations, 57600 baud for a\n"
+                 "SAUCE ANSiMation, else 9600 baud.  RAW sends a baud-rate stream as it is instead\n"
+                 "of drawing it through an 80x25 screen.  q or Esc stops.  Start with --charset cp437\n"
+                 "for the IBM block characters."),
+        "CPU": ("CPU [Z80|Z180]", "Show or switch the processor (also --cpu).  Z180 adds MLT, TST, TSTIO,\n"
+                "IN0/OUT0, OTIM/OTDM(R), SLP and the MMU: 1 MB of memory banked in 4K pages\n"
+                "through CBAR (3Ah), BBR (39h) and CBR (38h).  Each program starts with the plain 64K."),
         "Z3": ("Z3 [ON|OFF]", "ZCPR3 environment for Z-System tools (Z3LOC, ZSHOW, SETPATH, ...): the\n"
                "256-byte environment descriptor with a path, wheel byte, message buffers and an\n"
                "ANSI terminal capability block, below a lowered BDOS address.  There is no ZCPR3\n"
                "command processor, so each tool is started on its own.  Also --z3."),
-        "DEBUG": ("DEBUG [file [args]]", "Monitor/debugger: load a program and look at it before it runs.  L disassemble\n"
+        "DEBUG": ("DEBUG [file [args]]  (also DBG)", "Monitor/debugger: load a program and look at it before it runs.  L disassemble\n"
                   "(Z80, Z180 with --cpu z180), D dump, R registers (R HL 1234 sets one), T [n] trace n\n"
                   "instructions, P step over CALL/loops, G go, B/BC breakpoints, E/F enter/fill bytes,\n"
                   "H help, Q leave.  Numbers are hex.  DEBUG alone gives an empty memory to E-nter code in."),
@@ -2012,7 +2031,9 @@ class CPM:
         "STARTUP": ("Start-up commands", "Commands run when the prompt starts: the file given with --startup,\n"
                     "else STARTUP.CPM on A: user 0. Put PATH and ALIAS lines there."),
         "USER": ("USER n", "Switch to user area n (0-15). Needs a disk laid out as\n"
-                 "DRIVE/0, DRIVE/1 ... on the host. The prompt shows it: A0>, A3>"),
+                 "DRIVE/0, DRIVE/1 ... on the host (a folder 0 turns them on; the others are made\n"
+                 "when a file is first written there).  On a drive without them every user area\n"
+                 "shows the same files.  The prompt shows it: A0>, A3>"),
         "d:": ("A: B: ... P:", "Switch the current drive, e.g. B:"),
         "HELP": ("HELP [command]  or  ?", "This list, or details about one command.   HELP KEYS"),
         "EXIT": ("EXIT  (also BYE, QUIT)", "Leave the emulator."),
@@ -2035,7 +2056,7 @@ class CPM:
         if topic:
             key = topic.upper().rstrip(":") + (":" if len(topic.rstrip(":")) == 1 else "")
             key = "d:" if len(topic.rstrip(":")) == 1 and topic.rstrip(":").isalpha() else key
-            key = {"BYE": "EXIT", "QUIT": "EXIT", "?": "HELP"}.get(key, key)
+            key = {"BYE": "EXIT", "QUIT": "EXIT", "?": "HELP", "CP": "COPY", "DBG": "DEBUG"}.get(key, key)
             if key not in h:
                 self._print("\nNo help for %s. Type HELP for the list." % topic.upper())
                 return
@@ -2053,6 +2074,7 @@ class CPM:
             "\n  KEYMAP [mode]   cursor key codes      PLAY file [fps] show an ANSI stream/animation"
             "\n  IMAGE file ...  list/extract files of a CP/M disk image"
             "\n  DEBUG [file]    disassemble, trace, breakpoints   Z3 [ON|OFF]  ZCPR3 environment"
+            "\n  CPU [Z80|Z180]  show or switch the processor"
             "\n  OPEN file       open a file (PDF, picture ...) in the host's own program"
             "\n  HELP [command]  this help (or ?)      EXIT           leave (BYE, QUIT)"
             "\n"
@@ -2187,6 +2209,14 @@ class CPM:
                 self.keymode = args[0].lower()
             self._print("\nKeymap: %s%s" % (self.keymode.upper(),
                         "  (BBC for programs named BBC*: BBC3 for version 3, else WordStar)" if self.keymode == "auto" else ""))
+        elif cmd == "CPU":
+            if args and args[0].upper() in ("Z80", "Z180"):
+                cls = Z180 if args[0].upper() == "Z180" else Z80
+                if type(self.cpu) is not cls:
+                    self.cpu = cls(self.cpu.mem)
+            self._print("\nCPU: %s" % ("Z180" if self.cpu.z180 else "Z80"))
+            if self.cpu.z180:
+                self._print("\n  " + self.cpu.mmu_info())
         elif cmd == "Z3":
             if args and args[0].upper() in ("ON", "OFF"):
                 self.z3 = args[0].upper() == "ON"
@@ -2236,6 +2266,11 @@ class CPM:
     def shell(self):
         """Interactive command prompt. Returns at EOF or on EXIT."""
         self._print("\n" + self._c("bold", "CP/M 2.2 emulator") + " - type HELP for commands")
+        for letter, names in self._outside_user_areas().items():
+            self._print("\n" + self._c("red", "%s: %d file%s outside the user area folders, not visible: %s%s"
+                                        % (letter, len(names), "" if len(names) == 1 else "s",
+                                           " ".join(names[:5]), " ..." if len(names) > 5 else "")) +
+                        "\n   (move them into %s to use them in user 0)" % os.path.join(self.drives[letter], "0"))
         if not self._run_startup():
             return
         while True:
@@ -2307,7 +2342,7 @@ def main(argv=None):
     ap.add_argument("--color", "-color", choices=["auto", "on", "off"], default="auto",
                     help="ANSI colour in the built-in prompt, DIR and HELP (auto = on for a terminal)")
     ap.add_argument("--cpu", "-cpu", choices=["z80", "z180"], default="z80",
-                    help="z180: also MLT, TST, IN0/OUT0, OTIM/OTDM(R), SLP (no MMU)")
+                    help="z180: also MLT, TST, IN0/OUT0, OTIM/OTDM(R), SLP and the MMU (1 MB)")
     ap.add_argument("--z3", "-z3", action="store_true",
                     help="provide a ZCPR3 environment for Z-System tools (see the Z3 command)")
     ap.add_argument("--time", "-time", action="store_true",
@@ -2315,7 +2350,7 @@ def main(argv=None):
                          "the equivalent time on a 4 MHz Z80")
     ns = ap.parse_args(argv)
     if not (ns.disk or ns.dir or ns.drive or ns.program):
-        # No disks given: use ./disk if it exists; else offer to create it (A..P, user 0).
+        # No disks given: use ./disks if it exists; else offer to create it (A..P, user 0).
         if os.path.isdir("disks"):
             ns.disk = "disks"
         elif sys.stdin.isatty():

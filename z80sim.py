@@ -372,9 +372,10 @@ class Z80:
 
         Stops when PC >= stop_pc (checked before each instruction), when the
         CPU halts, or after max_steps instructions.  Behaves exactly like
-        calling step() repeatedly, but common unprefixed opcodes run through
-        pre-generated Python handlers (see _build_fast_ops).  Prefixed
-        opcodes, interrupts, HALT and EI go through the regular step().
+        calling step() repeatedly, but most opcodes, prefixed ones included, run
+        through pre-generated Python handlers (see _build_fast_ops).  The rest
+        (IXH/IXL forms, IN/OUT, RRD/RLD, LD A,I/R ...), interrupts, HALT and EI
+        go through the regular step(); LDIR/LDDR/CPIR/CPDR through _block_run.
         """
         if stop_pc > 0x10000:
             stop_pc = 0x10000
@@ -986,8 +987,9 @@ class Z80:
 # the address just after the opcode byte; the handler returns the new PC.
 # Base T-states come from a parallel table; handlers add any extra time (taken
 # branches) to cpu.tx.  A returned PC with bit 16 set asks run_fast to use the
-# full step() next (HALT, EI, ...); bit 17 means "nothing was executed" (the
-# CB/DD/ED/FD prefixes, which run through step()).
+# full step() next (HALT, EI, ...); bit 17 means "nothing was executed" (an
+# opcode left to step() or the block path).  The CB/DD/ED/FD entries dispatch on
+# the next byte to sub-tables, DD CB/FD CB on the fourth byte.
 # ----------------------------------------------------------------------------
 _HL = "((r[4]<<8)|r[5])"
 _FETCH_N = ["n=mem[pc]", "pc=(pc+1)&65535"]
@@ -1013,15 +1015,102 @@ _ALU = [
 _CC_MASK = (64, 64, 1, 1, 4, 4, 128, 128)
 
 
+def _daa_table():
+    """DAA result as (A, F) for every A and N/H/C flag combination, indexed by A | (F & 0x13) << 8."""
+    cpu = Z80()
+    tab = [None] * 0x1400
+    for f in range(0x14):
+        if f & ~0x13:
+            continue
+        for a in range(256):
+            cpu.r[7], cpu.f = a, f
+            cpu._daa()
+            tab[a | (f << 8)] = (cpu.r[7], cpu.f)
+    return tab
+
+
 _Z180_ED_NEG_SLOTS = (0x4C, 0x5C, 0x6C, 0x7C, 0x64, 0x74)   # NEG aliases the Z180 uses for MLT/TST
 
 
 class Z180(Z80):
-    """Hitachi HD64180 / Zilog Z180 CPU: the Z80 plus MLT, TST, TSTIO, IN0/OUT0, OTIM/OTDM(R)
-    and SLP.  Not emulated: the MMU (CBAR/BBR/CBR), the on-chip peripherals and the traps on
-    undefined opcodes (those stay NOPs).  Internal I/O ports (0x00-0x3F) reach io_read/io_write
-    like any other port, with the high address byte 0."""
+    """Hitachi HD64180 / Zilog Z180 CPU: the Z80 plus MLT, TST, TSTIO, IN0/OUT0, OTIM/OTDM(R),
+    SLP and the MMU (CBR 38h, BBR 39h, CBAR 3Ah) over 1 MB of physical memory.  Not emulated:
+    the other on-chip peripherals and the traps on undefined opcodes (those stay NOPs).  The
+    other internal I/O ports (0x00-0x3F, high address byte 0) reach io_read/io_write like any
+    other port.
+
+    The MMU keeps the fast core: `mem` stays the 64K the CPU sees, and when CBR, BBR or CBAR
+    change the 4K pages are written back to `phys` and the newly mapped ones copied in.  So two
+    logical pages mapped to the same physical page do not see each other's writes until the
+    next MMU change; `physical()` gives the up-to-date 1 MB."""
     z180 = True
+    PHYS_SIZE = 0x100000
+
+    def __init__(self, memory=None, io_read=None, io_write=None):
+        super().__init__(memory, io_read, io_write)
+        self._ext_read, self._ext_write = self.io_read, self.io_write
+        self.io_read, self.io_write = self._io_read, self._io_write
+
+    def reset(self):
+        super().reset()
+        if getattr(self, "phys", None) is None:
+            self.phys = bytearray(self.PHYS_SIZE)
+            self._map = list(range(16))                # physical 4K page of each logical page
+        self.cbr = self.bbr = 0
+        self.cbar = 0xF0
+        self._remap()
+
+    def _io_read(self, port):
+        if port & 0xFFFF in (0x38, 0x39, 0x3A):
+            return (self.cbr, self.bbr, self.cbar)[(port & 0xFF) - 0x38]
+        return self._ext_read(port)
+
+    def _io_write(self, port, v):
+        if port & 0xFFFF in (0x38, 0x39, 0x3A):
+            v &= 0xFF
+            if port & 0xFF == 0x38:
+                self.cbr = v
+            elif port & 0xFF == 0x39:
+                self.bbr = v
+            else:
+                self.cbar = v
+            self._remap()
+            return
+        self._ext_write(port, v)
+
+    def _page_map(self):
+        """Physical page (0-255, 4K each) of every logical page under the current registers."""
+        ca, ba = self.cbar >> 4, self.cbar & 0x0F
+        return [p if p < ba else ((p + (self.bbr if p < ca else self.cbr)) & 0xFF)
+                for p in range(16)]
+
+    def _remap(self):
+        mem, phys = self.mem, self.phys
+        new = self._page_map()
+        if new == self._map:
+            return
+        for p, q in enumerate(self._map):              # write back, then bring the new pages in
+            phys[q << 12:(q + 1) << 12] = mem[p << 12:(p + 1) << 12]
+        for p, q in enumerate(new):
+            mem[p << 12:(p + 1) << 12] = phys[q << 12:(q + 1) << 12]
+        self._map = new
+
+    def physical(self):
+        """The 1 MB physical memory, including what the mapped pages hold now."""
+        for p, q in enumerate(self._map):
+            self.phys[q << 12:(q + 1) << 12] = self.mem[p << 12:(p + 1) << 12]
+        return self.phys
+
+    def mmu_info(self):
+        """One line: the MMU registers and where each logical area lies in physical memory."""
+        ca, ba = self.cbar >> 4, self.cbar & 0x0F
+        parts = []
+        for name, lo, hi, base in (("common 0", 0, ba, 0), ("bank", ba, ca, self.bbr),
+                                   ("common 1", max(ba, ca), 16, self.cbr)):
+            if hi > lo:
+                parts.append("%s %04X-%04X=%05X" % (name, lo << 12, (hi << 12) - 1,
+                                                    ((lo + base) & 0xFF) << 12))
+        return "CBAR=%02X BBR=%02X CBR=%02X  %s" % (self.cbar, self.bbr, self.cbr, "  ".join(parts))
 
     def _ed_op(self, op):
         r = self.r
@@ -1168,7 +1257,7 @@ def _op_template(op):
                 return _FETCH_N + ["mem[%s]=n" % _HL] + R, 10
             return _FETCH_N + ["r[%d]=n" % y] + R, 7
         if y == 4:
-            return None, 0                # DAA
+            return ["r[7],cpu.f=DAA[r[7]|((cpu.f&19)<<8)]"] + R, 4
         pre = ["a=r[7]", "f=cpu.f"]
         if y == 0:
             calc = ["c=a>>7", "a=((a<<1)|c)&255", "cpu.f=(f&196)|(a&40)|c"]
@@ -1231,7 +1320,8 @@ def _op_template(op):
     return _PUSH_PC + ["cpu.wz=%d" % (y * 8), "return %d" % (y * 8)], 11
 
 
-_CODE_CACHE = {}          # compiled handler sources, shared by every Z80 instance
+_MAKERS = {}              # compiled handler factories by CPU type, shared by every instance
+_SOURCES = {}             # the same factories by source text
 _POST = ["if cpu.irq or cpu.nmi or cpu.halted or cpu._ei: return cpu.pc|65536", "return cpu.pc"]
 _NEXT = ["pc=(pc+1)&65535", "cpu.rx+=1"]           # step over the second byte of a prefixed opcode
 _FALL = ["return ((pc-1)&65535)|131072"]          # let run_fast's step()/block path take it
@@ -1254,8 +1344,14 @@ def _cb_template(op):
         if y == 7:
             body += ["else:", "    f|=128"]
         return body + ["cpu.f=f", "return pc"], t
+    store = ["mem[addr]=res"] if z == 6 else ["r[%d]=res" % z]
+    return body + _cb_calc(x, y) + store + ["return pc"], t
+
+
+def _cb_calc(x, y):
+    """Shift/rotate (x=0), RES (x=2) or SET (x=3) of v into res."""
     if x == 0:
-        calc = {0: ["c=v>>7", "res=((v<<1)|c)&255"],
+        return {0: ["c=v>>7", "res=((v<<1)|c)&255"],
                 1: ["c=v&1", "res=(v>>1)|(c<<7)"],
                 2: ["c=v>>7", "res=((v<<1)|(cpu.f&1))&255"],
                 3: ["c=v&1", "res=(v>>1)|((cpu.f&1)<<7)"],
@@ -1263,12 +1359,23 @@ def _cb_template(op):
                 5: ["c=v&1", "res=(v>>1)|(v&128)"],
                 6: ["c=v>>7", "res=((v<<1)|1)&255"],
                 7: ["c=v&1", "res=v>>1"]}[y] + ["cpu.f=SZ53P[res]|c"]
-    elif x == 2:
-        calc = ["res=v&%d" % (~(1 << y) & 255)]
-    else:
-        calc = ["res=v|%d" % (1 << y)]
-    store = ["mem[addr]=res"] if z == 6 else ["r[%d]=res" % z]
-    return body + calc + store + ["return pc"], t
+    if x == 2:
+        return ["res=v&%d" % (~(1 << y) & 255)]
+    return ["res=v|%d" % (1 << y)]
+
+
+def _ixcb_template(op, k):
+    """DD CB d xx / FD CB d xx (pc at the CB byte; op is the fourth byte)."""
+    x, y, z = op >> 6, (op >> 3) & 7, op & 7
+    body = _NEXT + ["d=mem[pc]", "if d>127: d-=256", "addr=(cpu.x[%d]+d)&65535" % k, "cpu.wz=addr",
+                    "pc=(pc+2)&65535", "v=mem[addr]"]
+    if x == 1:
+        body += ["cpu.tx+=20", "f=(cpu.f&1)|16|((addr>>8)&40)", "if not v&%d:" % (1 << y), "    f|=68"]
+        if y == 7:
+            body += ["else:", "    f|=128"]
+        return body + ["cpu.f=f", "return pc"]
+    store = ["mem[addr]=res"] + ([] if z == 6 else ["r[%d]=res" % z])    # undocumented copy
+    return body + ["cpu.tx+=23"] + _cb_calc(x, y) + store + ["return pc"]
 
 
 def _ed_template(op):
@@ -1323,6 +1430,8 @@ def _ix_template(op, k):
                     "addr=(%s+d)&65535" % IX, "cpu.wz=addr"]
     if op in (0xDD, 0xFD, 0xED):
         return _FALL
+    if op == 0xCB:
+        return ["return XCB%d[mem[(pc+2)&65535]](pc)" % k]
     if op == 0x21:
         return _NEXT + ["cpu.tx+=14"] + _FETCH_NN + ["%s=nn" % IX, "return pc"]
     if op == 0x22:
@@ -1372,30 +1481,36 @@ def _ix_template(op, k):
     return None
 
 
-def _build_fast_ops(cpu):
-    """Compile the handler tables for this CPU instance: the one-byte table with its base
-    T-states, and the sub-tables for the CB, ED, DD and FD prefixes."""
-    ns = {}
-    names = "cpu, r, alt, mem, SZ53, SZ53P, PRECB=None, PREED=None, PREDD=None, PREFD=None"
+def _compile(body, tag):
+    """Compile one handler template into make(cpu, r, ...) -> h(pc)."""
+    names = ("cpu, r, alt, mem, SZ53, SZ53P, DAA, PRECB=None, PREED=None, PREDD=None, PREFD=None, "
+             "XCB0=None, XCB1=None")
+    src = "def make(%s):\n    def h(pc):\n" % names + \
+          "".join("        %s\n" % l for l in body) + "    return h\n"
+    make = _SOURCES.get(src)          # many opcodes share a body (the fallbacks, ...)
+    if make is None:
+        ns = {}
+        exec(compile(src, "<z80 %s>" % tag, "exec"), ns)
+        make = _SOURCES[src] = ns["make"]
+    return make
 
-    def compile_one(body, tag, **pre):
-        src = "def make(%s):\n    def h(pc):\n" % names + \
-              "".join("        %s\n" % l for l in body) + "    return h\n"
-        code = _CODE_CACHE.get(src)
-        if code is None:
-            code = _CODE_CACHE[src] = compile(src, "<z80 %s>" % tag, "exec")
-        exec(code, ns)
-        return ns["make"](cpu, cpu.r, cpu.alt, cpu.mem, SZ53, SZ53P, **pre)
 
-    cb = [compile_one(_cb_template(o)[0], "CB %02X" % o) for o in range(256)]
+def _makers(z180):
+    """The handler factories for every table, compiled once per CPU type (z180 differs in ED)."""
+    m = _MAKERS.get(z180)
+    if m is not None:
+        return m
+    cb = [_compile(_cb_template(o)[0], "CB %02X" % o) for o in range(256)]
     ed = []
     for o in range(256):
-        body = None if (cpu.z180 and o in _Z180_ED_NEG_SLOTS) else _ed_template(o)
+        body = None if (z180 and o in _Z180_ED_NEG_SLOTS) else _ed_template(o)
         if body is None:
             body = ["cpu.xy=None", "cpu.pc=pc", "cpu.tx+=cpu._ed()"] + _POST
-        ed.append(compile_one(body, "ED %02X" % o))
-    ixs = []
+        ed.append(_compile(body, "ED %02X" % o))
+    xcb, ixs = [], []
     for k in (0, 1):
+        name = "DD" if k == 0 else "FD"
+        xcb.append([None] * 256)          # compiled on first use (see _build_fast_ops)
         tab = []
         for o in range(256):
             body = _ix_template(o, k)
@@ -1403,15 +1518,40 @@ def _build_fast_ops(cpu):
                 body = ["cpu.xy=%d" % k, "cpu.pc=(pc+1)&65535", "cpu._inc_r()",
                         "cpu.tx+=4+cpu._%s(%s)" % (("cb", "") if o == 0xCB else ("main", str(o)))] + \
                        ["cpu.xy=None"] + _POST
-            tab.append(compile_one(body, "%s %02X" % ("DD" if k == 0 else "FD", o)))
+            tab.append(_compile(body, "%s %02X" % (name, o)))
         ixs.append(tab)
-    pre = dict(PRECB=cb, PREED=ed, PREDD=ixs[0], PREFD=ixs[1])
-    ops = []
-    tt = []
+    ops, tt = [], []
     for op in range(256):
         body, t = _op_template(op)
         if body is None:
             body = ["cpu.xy=None", "cpu.pc=pc", "cpu.tx+=cpu._main(%d)" % op] + _POST
-        ops.append(compile_one(body, "op %02X" % op, **pre))
+        ops.append(_compile(body, "op %02X" % op))
         tt.append(t)
-    return ops, tt
+    m = _MAKERS[z180] = (cb, ed, xcb, ixs, ops, tt)
+    return m
+
+
+def _build_fast_ops(cpu):
+    """Make the handler tables for this CPU instance: the one-byte table with its base
+    T-states, and the sub-tables for the CB, ED, DD and FD prefixes."""
+    cb, ed, xcb, ixs, ops, tt = _makers(cpu.z180)
+    args = (cpu, cpu.r, cpu.alt, cpu.mem, SZ53, SZ53P, _DAA)
+    def lazy(k, o):
+        def h(pc):           # DD/FD CB d xx: most of the 512 never run, so compile on demand
+            m = makers[k][o]
+            if m is None:
+                m = makers[k][o] = _compile(_ixcb_template(o, k), "%s CB %02X" % ("DF"[k] + "D", o))
+            tab = xcb[k]
+            tab[o] = m(*args)
+            return tab[o](pc)
+        return h
+
+    makers = xcb
+    xcb = [[lazy(k, o) for o in range(256)] for k in (0, 1)]
+    pre = dict(PRECB=[m(*args) for m in cb], PREED=[m(*args) for m in ed],
+               PREDD=[m(*args, XCB0=xcb[0], XCB1=xcb[1]) for m in ixs[0]],
+               PREFD=[m(*args, XCB0=xcb[0], XCB1=xcb[1]) for m in ixs[1]])
+    return [m(*args, **pre) for m in ops], tt
+
+
+_DAA = _daa_table()
