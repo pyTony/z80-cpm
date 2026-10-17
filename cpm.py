@@ -794,6 +794,7 @@ class CPM:
 
     def load(self, program, args=(), addr=TPA):
         """Load a .COM image and set up page zero, FCBs and CPU registers."""
+        self.cpu.reset()                    # first: a Z180 MMU goes back to the plain 64K
         self._init_memory()
         self.dma = 0x80
         self.exited = False
@@ -808,7 +809,6 @@ class CPM:
         fcb2 = self._parse_fcb(args[1]) if len(args) > 1 else bytes([0]) + b" " * 11
         self._put(0x5C, fcb1)
         self._put(0x6C, fcb2)
-        cpu.reset()
         cpu.r[7] = 0
         cpu.f = 0
         cpu.pc = addr
@@ -2002,6 +2002,9 @@ class CPM:
                  "SAUCE ANSiMation, else 9600 baud.  RAW sends a baud-rate stream as it is instead\n"
                  "of drawing it through an 80x25 screen.  q or Esc stops.  Start with --charset cp437\n"
                  "for the IBM block characters."),
+        "CPU": ("CPU [Z80|Z180]", "Show or switch the processor (also --cpu).  Z180 adds MLT, TST, TSTIO,\n"
+                "IN0/OUT0, OTIM/OTDM(R), SLP and the MMU: 1 MB of memory banked in 4K pages\n"
+                "through CBAR (3Ah), BBR (39h) and CBR (38h).  Each program starts with the plain 64K."),
         "Z3": ("Z3 [ON|OFF]", "ZCPR3 environment for Z-System tools (Z3LOC, ZSHOW, SETPATH, ...): the\n"
                "256-byte environment descriptor with a path, wheel byte, message buffers and an\n"
                "ANSI terminal capability block, below a lowered BDOS address.  There is no ZCPR3\n"
@@ -2071,6 +2074,7 @@ class CPM:
             "\n  KEYMAP [mode]   cursor key codes      PLAY file [fps] show an ANSI stream/animation"
             "\n  IMAGE file ...  list/extract files of a CP/M disk image"
             "\n  DEBUG [file]    disassemble, trace, breakpoints   Z3 [ON|OFF]  ZCPR3 environment"
+            "\n  CPU [Z80|Z180]  show or switch the processor"
             "\n  OPEN file       open a file (PDF, picture ...) in the host's own program"
             "\n  HELP [command]  this help (or ?)      EXIT           leave (BYE, QUIT)"
             "\n"
@@ -2205,6 +2209,14 @@ class CPM:
                 self.keymode = args[0].lower()
             self._print("\nKeymap: %s%s" % (self.keymode.upper(),
                         "  (BBC for programs named BBC*: BBC3 for version 3, else WordStar)" if self.keymode == "auto" else ""))
+        elif cmd == "CPU":
+            if args and args[0].upper() in ("Z80", "Z180"):
+                cls = Z180 if args[0].upper() == "Z180" else Z80
+                if type(self.cpu) is not cls:
+                    self.cpu = cls(self.cpu.mem)
+            self._print("\nCPU: %s" % ("Z180" if self.cpu.z180 else "Z80"))
+            if self.cpu.z180:
+                self._print("\n  " + self.cpu.mmu_info())
         elif cmd == "Z3":
             if args and args[0].upper() in ("ON", "OFF"):
                 self.z3 = args[0].upper() == "ON"
@@ -2330,7 +2342,7 @@ def main(argv=None):
     ap.add_argument("--color", "-color", choices=["auto", "on", "off"], default="auto",
                     help="ANSI colour in the built-in prompt, DIR and HELP (auto = on for a terminal)")
     ap.add_argument("--cpu", "-cpu", choices=["z80", "z180"], default="z80",
-                    help="z180: also MLT, TST, IN0/OUT0, OTIM/OTDM(R), SLP (no MMU)")
+                    help="z180: also MLT, TST, IN0/OUT0, OTIM/OTDM(R), SLP and the MMU (1 MB)")
     ap.add_argument("--z3", "-z3", action="store_true",
                     help="provide a ZCPR3 environment for Z-System tools (see the Z3 command)")
     ap.add_argument("--time", "-time", action="store_true",

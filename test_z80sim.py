@@ -260,6 +260,35 @@ class Z180Tests(unittest.TestCase):
         self.assertEqual(seen, [(0x10, 3), (0x0F, 2), (0x0E, 1)])
         self.assertEqual((cpu.r[0], cpu.r[1], cpu.hl), (0, 0x0D, 0x0FFF))
 
+    def test_mmu_banks_1mb(self):
+        cpu = Z180()
+        self.assertEqual((cpu.cbar, cpu.bbr, cpu.cbr), (0xF0, 0, 0))
+        cpu.mem[0x4000] = 0xAA
+        # LD A,84h; OUT0 (3Ah),A; LD A,10h; OUT0 (39h),A; LD A,(4000h); LD B,A
+        # LD A,55h; LD (4000h),A; XOR A; OUT0 (39h),A; LD A,(4000h); HALT
+        cpu.mem[0:28] = bytes([0x3E, 0x84, 0xED, 0x39, 0x3A, 0x3E, 0x10, 0xED, 0x39, 0x39,
+                               0x3A, 0x00, 0x40, 0x47, 0x3E, 0x55, 0x32, 0x00, 0x40, 0xAF,
+                               0xED, 0x39, 0x39, 0x3A, 0x00, 0x40, 0x76, 0x00])
+        cpu.run_fast()
+        self.assertEqual(cpu.r[0], 0x00)                 # 4000h was physical 14000h: empty
+        self.assertEqual(cpu.r[7], 0xAA)                 # back to physical 4000h
+        self.assertEqual(cpu.physical()[0x14000], 0x55)
+        self.assertIn("bank 4000-7FFF=04000", cpu.mmu_info())
+        cpu.io_write(0x38, 0xF0)                         # OUT (C) path: CBR, common 1 F0000h+
+        self.assertEqual(cpu.io_read(0x38), 0xF0)
+        self.assertIn("common 1 8000-FFFF=F8000", cpu.mmu_info())
+        cpu.reset()
+        self.assertEqual(cpu.mem[0x4000], 0xAA)
+        self.assertEqual(cpu.physical()[0x14000], 0x55)  # survives a reset
+
+    def test_mmu_ports_do_not_reach_io_write(self):
+        seen = []
+        cpu = Z180(io_write=lambda p, v: seen.append(p), io_read=lambda p: 0x12)
+        cpu.io_write(0x39, 1)
+        cpu.io_write(0x3B, 2)
+        self.assertEqual(seen, [0x3B])
+        self.assertEqual((cpu.io_read(0x39), cpu.io_read(0x3B)), (1, 0x12))
+
     def test_otimr_and_slp(self):
         seen = []
         cpu = Z180(io_write=lambda p, v: seen.append((p, v)))
@@ -771,6 +800,18 @@ class CpmTests(unittest.TestCase):
         self.assertIn("HL=1234", text)
         self.assertIn("BC=0102", text)
         self.assertIn("21 34 12 CD 10 01 76", text)
+
+    def test_debug_z180_mmu(self):
+        cpm, out = make_cpm(self.tmp, stdin="CPU Z180\nQUIT\n")
+        cpm.shell()
+        self.assertIn("CPU: Z180", out.getvalue())
+        cpm.cpu.physical()[0x12340:0x12342] = b"\xBE\xEF"
+        cpm.console = Console(io.StringIO("R CBAR 84\nR BBR 10\nDP 12340 12341\nD 2340 2341\nQ\n"), out)
+        cpm._ccp_debug_empty()
+        text = out.getvalue()
+        self.assertIn("CBAR=84 BBR=10", text)
+        self.assertRegex(text, r"12340 +BE EF")
+        self.assertNotRegex(text, r"\n2340 +BE EF")      # 2340h is common area 0
 
     def test_debug_register_addresses(self):
         cpm, out = make_cpm(self.tmp, stdin=(

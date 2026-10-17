@@ -58,9 +58,13 @@ letters (`B:`), it has some ZCPR-style extras (see `HELP name`):
   Ctrl+letter for terminals without a Ctrl key (e.g. Termux).
 * Line editing - Left/Right, Home/End, Delete, Backspace, `^U` (clear), Up/Down (earlier
   commands) work in the prompt, so a pasted line can be corrected before Enter.
-* `--cpu z180` - HD64180/Z180 instructions on top of the Z80: `MLT`, `TST`, `TSTIO`,
-  `IN0`/`OUT0`, `OTIM`/`OTDM` (and `R` forms), `SLP`. No MMU or on-chip peripherals; undefined
-  opcodes stay NOPs. A Z80 build of the same program still runs unchanged.
+* `--cpu z180` or `CPU Z180` at the prompt - HD64180/Z180 instructions on top of the Z80: `MLT`,
+  `TST`, `TSTIO`, `IN0`/`OUT0`, `OTIM`/`OTDM` (and `R` forms), `SLP`, and the MMU: 1 MB of
+  memory mapped in 4K pages through `CBAR` (3Ah), `BBR` (39h) and `CBR` (38h). Each program
+  starts with the plain 64K mapping; the rest of the 1 MB keeps its contents between programs.
+  No other on-chip peripherals; undefined opcodes stay NOPs. A Z80 build of the same program
+  still runs unchanged. In `DEBUG`, `R` shows the MMU, `R CBAR 84` sets it and `DP` dumps
+  physical memory.
 * `PLAY file [fps|baud] [RAW]` - play an ANSI/terminal stream (e.g. an ANSI "Bad Apple"). Frames
   start at `ESC[H`, `ESC[1;1H` or a form feed and are paced at fps (default 30 when the file
   has frames, 57600 baud for a SAUCE ANSiMation such as Bad Apple; a number above 240 is a baud rate, default 9600 otherwise). Stops at `^Z`

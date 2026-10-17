@@ -8,6 +8,7 @@ Commands (numbers are hexadecimal):
   P                  like T, but runs a CALL/RST/DJNZ/block instruction as one step
   G [addr]           go to the next breakpoint or the end of the program
   B [addr...]        set / list breakpoints,  BC [addr]  clear one or all
+  DP [addr [end]]    Z180: dump physical memory (5 hex digits); R CBAR 84 sets an MMU register
   Q                  leave
 """
 from z80dis import disasm
@@ -23,6 +24,7 @@ class Debugger:
         self.bps = []
         self.list_next = None
         self.dump_next = None
+        self.dump_phys = 0
 
     # ------------------------------------------------------------- helpers
     def out(self, text):
@@ -60,7 +62,18 @@ class Debugger:
                  ((alt[7] << 8) | c.f_alt, (alt[0] << 8) | alt[1], (alt[2] << 8) | alt[3],
                   (alt[4] << 8) | alt[5], self.flags(), c.i, c.rr, c.im,
                   c.iff1, c.iff2))
+        if self.z180():
+            self.out("\n" + c.mmu_info())
         self.out("\n" + self.line(c.pc)[1])
+
+    def dump(self, read, start, end, width):
+        a = start & ~0xF
+        while a <= end:
+            row = ["%02X" % read(a + i) if start <= a + i <= end else "  " for i in range(16)]
+            asc = "".join(chr(read(a + i)) if start <= a + i <= end and 32 <= read(a + i) < 127
+                          else " " for i in range(16))
+            self.out("\n%0*X  %s  %s  |%s|" % (width, a, " ".join(row[:8]), " ".join(row[8:]), asc))
+            a += 16
 
     def num(self, text):
         """An address: hex numbers and register names (PC SP HL BC DE IX IY AF), joined
@@ -159,16 +172,15 @@ class Debugger:
                 if end < start:
                     end = 0xFFFF
                 mem = self.cpu.mem
-                a = start & 0xFFF0
-                while a <= end:
-                    row = []
-                    for i in range(16):
-                        row.append("%02X" % mem[(a + i) & 0xFFFF] if start <= a + i <= end else "  ")
-                    asc = "".join(chr(mem[(a + i) & 0xFFFF]) if 32 <= mem[(a + i) & 0xFFFF] < 127
-                                  and start <= a + i <= end else " " for i in range(16))
-                    self.out("\n%04X  %s  %s  |%s|" % (a, " ".join(row[:8]), " ".join(row[8:]), asc))
-                    a += 16
+                self.dump(lambda a: mem[a & 0xFFFF], start, end, 4)
                 self.dump_next = (end + 1) & 0xFFFF
+            elif cmd == "DP" and self.z180():
+                phys = self.cpu.physical()
+                start = int(args[0].rstrip("hH"), 16) if args else self.dump_phys
+                end = int(args[1].rstrip("hH"), 16) if len(args) > 1 else start + 0x7F
+                end = min(max(end, start), len(phys) - 1)
+                self.dump(lambda a: phys[a], start, end, 5)
+                self.dump_phys = (end + 1) % len(phys)
             elif cmd == "R":
                 if len(args) >= 2 or (args and "=" in args[0]):
                     name, _, val = (args[0] if "=" in args[0] else " ".join(args[:2])).replace("=", " ").partition(" ")
@@ -233,6 +245,8 @@ class Debugger:
             c.r[_BYTES[name]] = value & 0xFF
         elif name == "F":
             c.f = value & 0xFF
+        elif self.z180() and name in ("CBR", "BBR", "CBAR"):
+            c.io_write(("CBR", "BBR", "CBAR").index(name) + 0x38, value & 0xFF)
         else:
             raise ValueError(name)
 
