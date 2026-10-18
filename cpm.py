@@ -2285,7 +2285,17 @@ class CPM:
             self.user = int(args[0])
             self._set_drive(self.drive)
         else:
-            self._ccp_run(cmd, args)
+            m = self._DU_RE.match(cmd)
+            if m and m.group(3) and int(m.group(2)) < 16:   # C3:PROG - from that user area
+                user = self.user
+                self.user = int(m.group(2))
+                try:
+                    self._ccp_run((m.group(1) + ":" if m.group(1) else "") + m.group(3), args)
+                finally:
+                    self.user = user
+                    self._set_drive(self.drive)
+            else:
+                self._ccp_run(cmd, args)
         return True
 
     def _run_startup(self):
@@ -2423,7 +2433,10 @@ def main(argv=None):
         drives["A"] = ns.dir
     for spec in ns.drive:
         letter, _, path = spec.partition("=")
-        drives[letter.upper()] = path
+        if not re.fullmatch(r"[A-Pa-p]:?", letter) or not path:
+            ap.error("--drive wants X=FOLDER, e.g. --drive B=/tmp/disk (got %r); "
+                     "to start in a drive, use -c \"C0:; PROG\" or -c C0:PROG" % spec)
+        drives[letter[0].upper()] = path
     if not drives and not ns.program:
         drives["A"] = "."      # --disk given but empty
     start_drive, start_user = 0, 0

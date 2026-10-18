@@ -1163,6 +1163,12 @@ class CommandSwitchTests(unittest.TestCase):
         lines = [l for l in out.getvalue().split("\r\n") if l.strip()]
         self.assertEqual(lines, ["C: FOO      TXT", "C: BAR      COM", "NO FILE"])
 
+    def test_bad_drive_option(self):
+        import contextlib
+        import cpm as cpm_mod
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            cpm_mod.main(["--drive", "c0:", "-c", "DIR"])
+
 
 class Z180OnZ80Tests(unittest.TestCase):
     """A Z180 instruction run on the Z80 is reported once; the Z180 itself stays quiet."""
