@@ -1170,6 +1170,24 @@ class CommandSwitchTests(unittest.TestCase):
             cpm_mod.main(["--drive", "c0:", "-c", "DIR"])
 
 
+class SpeedTests(unittest.TestCase):
+    """SPEED / --speed: a program runs no faster than the chosen clock."""
+
+    def test_throttle(self):
+        import time
+        prog = bytes([0x01, 0x00, 0x00,                 # LD BC,0
+                      0x0B, 0x78, 0xB1, 0x20, 0xFB,     # loop: DEC BC  LD A,B  OR C  JR NZ,loop
+                      0xC9])                            # 65536 x 26 T-states = 0.21 s at 8 MHz
+        cpm = CPM(console=Console(stdin=io.StringIO(""), stdout=io.StringIO()))
+        cpm.throttle, cpm.mhz = True, 8.0
+        cpm.load(prog)
+        t0 = time.perf_counter()
+        cpm.run()
+        took = time.perf_counter() - t0
+        self.assertTrue(cpm.exited)
+        self.assertGreater(took, 0.9 * cpm.cpu.tstates / 8e6)
+
+
 class Z180OnZ80Tests(unittest.TestCase):
     """A Z180 instruction run on the Z80 is reported once; the Z180 itself stays quiet."""
 

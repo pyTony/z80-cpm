@@ -99,6 +99,9 @@ letters (`B:`), it has some ZCPR-style extras (see `HELP name`):
 * `DIR C3:` (or `DIR C3:*.COM`) lists another drive and user area; `C3:` switches to both at once,
   and `C3:PROG` runs PROG.COM from there.
   From the host, `python cpm.py -c "DIR C3:"` runs prompt commands (`;` separates several) and exits.
+* `SPEED 4` (or `--speed 4`) runs programs no faster than a real 4 MHz CPU, for games and delay
+  loops; `SPEED FULL` is the default. `--mhz` (or `TIME 6.144`) only sets the clock the `[time]` line
+  compares with: 4 MHz for the Z80 and 18.432 MHz for the Z180 by default.
 * `DEBUG [file [args]]` - a small monitor for the program before and while it runs:
   `L` disassemble (Z80, and the Z180 extras with `--cpu z180`; the CP/M `DDT` knows only the
   8080), `D` dump, `R` registers (`R HL 1234` sets one), `T [n]` trace n instructions with the
