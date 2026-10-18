@@ -33,6 +33,7 @@ import os
 import re
 import shutil
 import sys
+import time
 
 import z3env
 from debugger import Debugger
@@ -681,6 +682,8 @@ class CPM:
         self.user = 0
         self.exited = False
         self.timing = False
+        self.mhz = None            # clock for the [time] comparison; None: 4 (Z80) or 18.432 (Z180)
+        self.throttle = False      # True: run no faster than that clock
         self.color = False                  # ANSI colour in the built-in prompt/DIR/HELP
         self.path = ["$0:", "A0:"]         # command search path (see HELP PATH)
         self.aliases = {}
@@ -813,6 +816,11 @@ class CPM:
         self._print("\n" + self._c("yellow", "[%04X: %s is a Z180 instruction; this is a Z80. "
                                     "Run Z180 programs with --cpu z180 (or CPU Z180)]" % (pc, name)) + "\n")
 
+    def clock_mhz(self):
+        """Clock of the real machine the [time] line compares with: 4 MHz for a Z80 (a typical
+        CP/M machine), 18.432 MHz for a Z180 (RomWBW boards such as the SC126), or --mhz."""
+        return self.mhz or (18.432 if self.cpu.z180 else 4.0)
+
     def cpu_line(self):
         if self.cpu.z180:
             return "CPU: Z180 (1 MB with the MMU)"
@@ -867,11 +875,19 @@ class CPM:
         """Run until the program exits (warm boot / BDOS 0 / HALT)."""
         cpu = self.cpu
         n = 0
+        if self.throttle:                   # run no faster than clock_mhz(): see _pace
+            hz = self.clock_mhz() * 1e6
+            t0, ts0, idle0 = _clock(), cpu.tstates, self.console.idle
         try:
             while not self.exited:
                 left = None if max_steps is None else max_steps - n
                 if left is not None and left <= 0:
                     break
+                if self.throttle:
+                    left = 2000 if left is None else min(left, 2000)
+                    ahead = (cpu.tstates - ts0) / hz - (_clock() - t0 - (self.console.idle - idle0))
+                    if ahead > 0.002:       # sleep in small steps: the timer is coarse on Windows
+                        time.sleep(ahead)
                 n += cpu.run_fast(BDOS_BASE, left)
                 pc = cpu.pc
                 if pc >= BDOS_BASE:
@@ -1500,9 +1516,11 @@ class CPM:
             wait = self.console.idle - idle0
             dt = time.perf_counter() - t0 - wait
             ts = self.cpu.tstates - ts0
-            real = ts / 4e6
-            real_cpu = ("a 4 MHz Z180 would take about" if self.cpu.z180    # Z80 cycle counts
-                        else "a real 4 MHz Z80 takes")
+            mhz = self.clock_mhz()
+            real = ts / (mhz * 1e6)
+            # T-states are Z80 cycle counts; a Z180 needs fewer for many instructions
+            real_cpu = ("a %g MHz Z180 would take about" % mhz if self.cpu.z180
+                        else "a real %g MHz Z80 takes" % mhz)
             self._print("\n" + self._c("dim", "[time]") + " ran %.2f s on this computer; %s "
                         "%.2f s (%.2fx real speed); %s instructions, %s T-states%s\n" %
                         (dt, real_cpu, real, real / dt if dt else 0, format(self._steps_last, ","),
@@ -2029,8 +2047,12 @@ class CPM:
                  "/text: search (case ignored), n/N: next/previous;  q or Esc: quit.\n"
                  "Binary files open as a hex dump; x switches hex/text, VIEW file HEX forces hex."),
         "TYPE": ("TYPE file", "Show a text file on the screen.   TYPE READ.ME"),
-        "TIME": ("TIME [ON|OFF]", "Show timing after every program run: real time here, instructions,\n"
-                 "T-states and the time a 4 MHz Z80 would need. Also --time on the command line."),
+        "SPEED": ("SPEED [MHz|FULL]", "Run programs no faster than a real CPU at that clock (SPEED 4, SPEED 18.432),\n"
+                  "so games and delay loops behave as on the real machine; FULL = as fast as possible\n"
+                  "(default).  Only slows down: about 25 MHz is the most this computer manages.  Also --speed."),
+        "TIME": ("TIME [ON|OFF|MHz]", "Show timing after every program run: time on this computer, instructions,\n"
+                 "T-states and the time a real CPU would need: 4 MHz for a Z80, 18.432 MHz for a Z180,\n"
+                 "or TIME 6.144 (turns timing on at that clock).  Also --time and --mhz."),
         "IMAGE": ("IMAGE file [format[:slice]] [GET [n:]pattern [dest]]",
                   "List the files of a raw CP/M disk image (an .img of a floppy or a RomWBW hard disk\n"
                   "slice, read only), or copy them out into the current or a given drive and user.\n"
@@ -2110,6 +2132,7 @@ class CPM:
             "\n  USER n          switch user area      B:             switch drive"
             "\n  PATH [list]     command search path   ALIAS n=text   short names"
             "\n  TIME [ON|OFF]   show run timing       cmd ; cmd      several commands"
+            "\n  SPEED [MHz]     run at a real clock"
             "\n  COPY src [dst]  copy files (HELP COPY)  VIEW file    page through a file of any size"
             "\n  KEYMAP [mode]   cursor key codes      PLAY file [fps] show an ANSI stream/animation"
             "\n  IMAGE file ...  list/extract files of a CP/M disk image"
@@ -2241,12 +2264,22 @@ class CPM:
                             break
                         self.console.write(b)
                 self.console.flush()
+        elif cmd == "SPEED":
+            if args and re.fullmatch(r"\d+(\.\d+)?", args[0]) and 0 < float(args[0]) <= 1000:
+                self.throttle, self.mhz = True, float(args[0])
+            elif args and args[0].upper() in ("FULL", "OFF"):
+                self.throttle = False
+            self._print("\nSpeed: %s" % ("%g MHz %s" % (self.clock_mhz(), "Z180" if self.cpu.z180 else "Z80")
+                                          if self.throttle else "as fast as possible"))
         elif cmd == "TIME":
             if args and args[0].upper() in ("ON", "OFF"):
                 self.timing = args[0].upper() == "ON"
+            elif args and re.fullmatch(r"\d+(\.\d+)?", args[0]) and 0 < float(args[0]) <= 1000:
+                self.timing, self.mhz = True, float(args[0])
             else:
                 self.timing = not self.timing
-            self._print("\nTiming %s" % ("ON" if self.timing else "OFF"))
+            self._print("\nTiming %s" % ("ON (compared with a %g MHz %s)" % (
+                self.clock_mhz(), "Z180" if self.cpu.z180 else "Z80") if self.timing else "OFF"))
         elif cmd == "IMAGE":
             self._ccp_image(text.strip().split()[1:])          # file names keep their case
         elif cmd == "PLAY" and args:
@@ -2407,7 +2440,12 @@ def main(argv=None):
                     help="run prompt commands and exit, e.g. -c \"DIR C0:\" (; separates several)")
     ap.add_argument("--time", "-time", action="store_true",
                     help="after each program run print elapsed time, instruction count and "
-                         "the equivalent time on a 4 MHz Z80")
+                         "the equivalent time on a real CPU (see --mhz)")
+    ap.add_argument("--speed", "-speed", type=float, metavar="MHZ",
+                    help="run no faster than a real CPU at this clock, e.g. --speed 4 (see SPEED)")
+    ap.add_argument("--mhz", "-mhz", type=float, metavar="MHZ",
+                    help="clock of the real CPU that --time compares with "
+                         "(default 4 for the Z80, 18.432 for the Z180)")
     ns = ap.parse_args(argv)
     if not (ns.disk or ns.dir or ns.drive or ns.program):
         # No disks given: use ./disks if it exists; else offer to create it (A..P, user 0).
@@ -2465,6 +2503,8 @@ def main(argv=None):
               cpu=Z180() if ns.cpu == "z180" else None)
     cpm.drive, cpm.user = start_drive, start_user
     cpm.timing = ns.time
+    cpm.mhz = ns.speed or ns.mhz
+    cpm.throttle = bool(ns.speed)
     cpm.z3 = ns.z3
     cpm.startup = ns.startup
     cpm.color = (ns.color == "on" or
